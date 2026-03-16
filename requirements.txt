@@ -12,4 +12,4 @@ wandb==0.25.0
 # gradio==5.38.2
 
 # Optional acceleration
-flash-attn==2.5.8
+# flash-attn==2.5.8

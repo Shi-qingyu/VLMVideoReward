@@ -14,7 +14,7 @@ llm=Qwen/Qwen3-VL-4B-Instruct  # Using HuggingFace model ID
 
 # Training hyperparameters
 lr=5e-5
-batch_size=2
+batch_size=8
 grad_accum_steps=4
 
 # Training entry point
@@ -24,7 +24,7 @@ entry_file=qwenvl/train/train_qwen.py
 datasets=videoreward
 
 # Output configuration
-run_name="qwen3vl-8b-baseline"
+run_name="qwen3vl-4b-baseline"
 output_dir=./output/${run_name}
 
 # Training arguments
