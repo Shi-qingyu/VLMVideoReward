@@ -26,7 +26,6 @@ DEFAULT_VIDEO_TOKEN = "<video>"
 
 local_rank = None
 
-
 def rank0_print(*args):
     if local_rank == 0:
         print(*args)
@@ -520,7 +519,6 @@ class LazySupervisedDataset(Dataset):
                 )
             return new_data_dict
 
-
 def pad_and_cat(tensor_list):
     max_length = max(tensor.shape[2] for tensor in tensor_list)
 
@@ -679,6 +677,95 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         return batch
 
 
+class LazyRLDataset(Dataset):
+    """Dataset for RL."""
+
+    def __init__(self, data_args):
+        super(LazyRLDataset, self).__init__()
+
+        dataset = data_args.dataset_use.split(",")
+        dataset_list = data_list(dataset)
+        rank0_print(f"Loading datasets: {dataset_list}")
+        self.video_max_total_pixels = getattr(
+            data_args, "video_max_total_pixels", 1664 * 28 * 28
+        )
+        self.video_min_total_pixels = getattr(
+            data_args, "video_min_total_pixels", 256 * 28 * 28
+        )
+        self.model_type = data_args.model_type
+        if data_args.model_type == "qwen3vl":
+            self.get_rope_index = get_rope_index_3
+        elif data_args.model_type == "qwen2.5vl":
+            self.get_rope_index = get_rope_index_25
+        elif data_args.model_type == "qwen2vl":
+            self.get_rope_index = get_rope_index_2
+        else:
+            raise ValueError(f"model_type: {data_args.model_type} not supported")
+
+        list_data_dict = []
+
+        for data in dataset_list:
+            file_format = data["annotation_path"].split(".")[-1]
+            if file_format == "jsonl":
+                annotations = read_jsonl(data["annotation_path"])
+            else:
+                annotations = json.load(open(data["annotation_path"], "r"))
+            sampling_rate = data.get("sampling_rate", 1.0)
+            if sampling_rate < 1.0:
+                annotations = random.sample(
+                    annotations, int(len(annotations) * sampling_rate)
+                )
+                rank0_print(f"sampling {len(annotations)} examples from dataset {data}")
+            else:
+                rank0_print(f"dataset name: {data}")
+            for ann in annotations:
+                if isinstance(ann, list):
+                    for sub_ann in ann:
+                        sub_ann["data_path"] = data["data_path"]
+                else:
+                    ann["data_path"] = data["data_path"]
+            list_data_dict += annotations
+
+        rank0_print(f"Total training samples: {len(list_data_dict)}")
+
+    def __len__(self):
+        return len(self.list_data_dict)
+
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        num_base_retries = 3
+
+        # try the current sample first
+        for attempt_idx in range(num_base_retries):
+            try:
+                source = self.list_data_dict[i]
+                messages = _build_messages(source, Path(source.get("data_path", "")), False)
+                user = messages[:1]
+                gt = messages[1:]
+                ret = dict(
+                    user=user,
+                    gt=gt,
+                )
+                return ret
+            except Exception as e:
+                # sleep 1s in case it is a cloud disk issue
+                print(f"[Try #{attempt_idx}] Failed to fetch sample {i}. Exception:", e)
+                time.sleep(1)
+
+
+@dataclass
+class DataCollatorForRLDataset(object):
+    """Collate examples into packed sequence with multi-modal support."""
+
+    tokenizer: transformers.PreTrainedTokenizer
+
+    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        batch = dict()
+        for key in ["user", "gt"]:
+            batch[key] = [instance[key] for instance in instances if key in instance]
+
+        return batch
+    
+
 def make_supervised_data_module(processor, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = LazySupervisedDataset(processor, data_args=data_args)
@@ -688,6 +775,15 @@ def make_supervised_data_module(processor, data_args) -> Dict:
             train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
         )
     data_collator = DataCollatorForSupervisedDataset(processor.tokenizer)
+    return dict(
+        train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
+    )
+
+
+def make_rl_data_module(processor, data_args) -> Dict:
+    """Make dataset and collator for supervised fine-tuning."""
+    train_dataset = LazySupervisedDataset(processor, data_args=data_args)
+    data_collator = DataCollatorForRLDataset(processor.tokenizer)
     return dict(
         train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
     )

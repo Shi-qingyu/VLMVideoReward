@@ -24,6 +24,7 @@ class DataArguments:
     video_min_pixels: int = field(default=256 * 28 * 28)
     video_fps: float = 2
     using_cot: bool = field(default=True)
+    
 
 
 @dataclass
@@ -44,3 +45,17 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_r: int = field(default=64)
     lora_alpha: int = field(default=128)
     lora_dropout: float = field(default=0.0)
+
+
+@dataclass
+class GRPOArguments(transformers.TrainingArguments):
+    cache_dir: Optional[str] = field(default=None)
+    optim: str = field(default="adamw_torch")
+    model_max_length: int = field(
+        default=512,
+        metadata={
+            "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."
+        },
+    )
+    mm_projector_lr: Optional[float] = None
+    vision_tower_lr: Optional[float] = None

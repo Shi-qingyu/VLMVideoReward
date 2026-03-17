@@ -2,7 +2,7 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 # default: Load the model on the available device(s)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "output/qwen3vl-2b-baseline/checkpoint-1800", dtype="auto", device_map="auto"
+    "output/qwen3vl-2b-baseline/checkpoint-450", dtype="auto", device_map="auto"
 )
 
 processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline")
@@ -36,7 +36,7 @@ inputs = inputs.to(model.device)
 # Inference: Generation of the output
 generated_ids = model.generate(**inputs, max_new_tokens=128)
 generated_ids_trimmed = [
-    out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
 ]
 output_text = processor.batch_decode(
     generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False

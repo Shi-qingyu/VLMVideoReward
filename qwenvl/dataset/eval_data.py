@@ -1,5 +1,6 @@
 import os
 import json
+import copy
 
 
 message_template = {
@@ -24,7 +25,7 @@ def load_eval_data(annotation_path):
         examples = json.load(f)
 
     for example in examples:
-        message = message_template.copy()
+        message = copy.deepcopy(message_template)
         message["content"][0]["video"] = os.path.join("data", example["videos"][0])
         message["content"][1]["text"] = example["conversations"][0]["value"]
         ground_truth = example["conversations"][1]["value"]
