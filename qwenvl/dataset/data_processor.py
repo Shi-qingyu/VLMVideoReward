@@ -4,8 +4,8 @@ import logging
 import re
 import time
 import itertools
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, List, Tuple, Any
+from dataclasses import dataclass
+from typing import Dict, List, Any
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -346,7 +346,6 @@ class LazySupervisedDataset(Dataset):
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         num_base_retries = 3
-        num_final_retries = 30
 
         # try the current sample first
         for attempt_idx in range(num_base_retries):
@@ -680,27 +679,13 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
 class LazyRLDataset(Dataset):
     """Dataset for RL."""
 
-    def __init__(self, data_args):
-        super(LazyRLDataset, self).__init__()
+    def __init__(self, processor, data_args):
+        super().__init__()
+        self.processor = processor
 
         dataset = data_args.dataset_use.split(",")
         dataset_list = data_list(dataset)
         rank0_print(f"Loading datasets: {dataset_list}")
-        self.video_max_total_pixels = getattr(
-            data_args, "video_max_total_pixels", 1664 * 28 * 28
-        )
-        self.video_min_total_pixels = getattr(
-            data_args, "video_min_total_pixels", 256 * 28 * 28
-        )
-        self.model_type = data_args.model_type
-        if data_args.model_type == "qwen3vl":
-            self.get_rope_index = get_rope_index_3
-        elif data_args.model_type == "qwen2.5vl":
-            self.get_rope_index = get_rope_index_25
-        elif data_args.model_type == "qwen2vl":
-            self.get_rope_index = get_rope_index_2
-        else:
-            raise ValueError(f"model_type: {data_args.model_type} not supported")
 
         list_data_dict = []
 
@@ -710,6 +695,7 @@ class LazyRLDataset(Dataset):
                 annotations = read_jsonl(data["annotation_path"])
             else:
                 annotations = json.load(open(data["annotation_path"], "r"))
+
             sampling_rate = data.get("sampling_rate", 1.0)
             if sampling_rate < 1.0:
                 annotations = random.sample(
@@ -718,50 +704,68 @@ class LazyRLDataset(Dataset):
                 rank0_print(f"sampling {len(annotations)} examples from dataset {data}")
             else:
                 rank0_print(f"dataset name: {data}")
+
             for ann in annotations:
                 if isinstance(ann, list):
                     for sub_ann in ann:
                         sub_ann["data_path"] = data["data_path"]
+                        list_data_dict.append(sub_ann)
                 else:
                     ann["data_path"] = data["data_path"]
-            list_data_dict += annotations
+                    list_data_dict.append(ann)
 
+        self.list_data_dict = list_data_dict
         rank0_print(f"Total training samples: {len(list_data_dict)}")
 
     def __len__(self):
         return len(self.list_data_dict)
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        num_base_retries = 3
+        num_retries = 3
 
-        # try the current sample first
-        for attempt_idx in range(num_base_retries):
+        for attempt_idx in range(num_retries):
+            cur_i = i if attempt_idx == 0 else random.randint(0, len(self.list_data_dict) - 1)
             try:
-                source = self.list_data_dict[i]
+                source = self.list_data_dict[cur_i]
                 messages = _build_messages(source, Path(source.get("data_path", "")), False)
-                user = messages[:1]
-                gt = messages[1:]
-                ret = dict(
-                    user=user,
-                    gt=gt,
+
+                assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
+
+                if messages[0]["role"] == "user":
+                    user = messages[0]
+                    gt = messages[1]
+                else:
+                    user = messages[1]
+                    gt = messages[0]
+
+                _ = self.processor.apply_chat_template(
+                    [user],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                    padding=True,
                 )
-                return ret
+
+                return {
+                    "user": [user],
+                    "gt": [gt],
+                }
+
             except Exception as e:
-                # sleep 1s in case it is a cloud disk issue
-                print(f"[Try #{attempt_idx}] Failed to fetch sample {i}. Exception:", e)
+                print(f"[Try #{attempt_idx}] Failed to fetch sample {cur_i}. Exception: {e}")
                 time.sleep(1)
+
+        raise RuntimeError(f"Failed to fetch sample {i} after {num_retries} retries")
 
 
 @dataclass
 class DataCollatorForRLDataset(object):
     """Collate examples into packed sequence with multi-modal support."""
-
-    tokenizer: transformers.PreTrainedTokenizer
-
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         batch = dict()
         for key in ["user", "gt"]:
-            batch[key] = [instance[key] for instance in instances if key in instance]
+            batch[key] = [instance[key] for instance in instances]
 
         return batch
     
@@ -781,9 +785,8 @@ def make_supervised_data_module(processor, data_args) -> Dict:
 
 
 def make_rl_data_module(processor, data_args) -> Dict:
-    """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = LazySupervisedDataset(processor, data_args=data_args)
-    data_collator = DataCollatorForRLDataset(processor.tokenizer)
+    train_dataset = LazyRLDataset(processor, data_args=data_args)
+    data_collator = DataCollatorForRLDataset()
     return dict(
         train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
     )

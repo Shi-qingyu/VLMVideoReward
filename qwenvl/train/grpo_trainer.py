@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import os
-import textwrap
 from collections import defaultdict
 from typing import Any, Callable, Optional, Union
 import random
+import copy
 
 import torch
 import torch.utils.data
@@ -25,8 +25,6 @@ from datasets import Dataset, IterableDataset
 from packaging import version
 from transformers import (
     AriaForConditionalGeneration,
-    AriaProcessor,
-    AutoModelForCausalLM,
     AutoModelForSequenceClassification,
     AutoProcessor,
     AutoTokenizer,
@@ -35,6 +33,7 @@ from transformers import (
     PreTrainedTokenizerBase,
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
+    Qwen3VLForConditionalGeneration,
     Trainer,
     TrainerCallback,
     is_wandb_available,
@@ -42,13 +41,10 @@ from transformers import (
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
-from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
-from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
-from trl.trainer.grpo_config import GRPOConfig
-from trl.trainer.utils import generate_model_card, get_comet_experiment_url
-from trl import GRPOTrainer
+from qwenvl.train.argument import GRPOArguments
+from qwenvl.train.sft_trainer import create_optimizer
 
-import copy
+from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 
 
 if is_peft_available():
@@ -62,6 +58,31 @@ if is_wandb_available():
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
+
+def set_model(model_args, model):
+    if model_args.tune_mm_vision:
+        for n, p in model.model.visual.named_parameters():
+            p.requires_grad = True
+    else:
+        for n, p in model.model.visual.named_parameters():
+            p.requires_grad = False
+
+    if model_args.tune_mm_mlp:
+        for n, p in model.model.visual.merger.named_parameters():
+            p.requires_grad = True
+    else:
+        for n, p in model.model.visual.merger.named_parameters():
+            p.requires_grad = False
+
+    if model_args.tune_mm_llm:
+        for n, p in model.model.language_model.named_parameters():
+            p.requires_grad = True
+        model.lm_head.requires_grad = True
+    else:
+        for n, p in model.model.language_model.named_parameters():
+            p.requires_grad = False
+        model.lm_head.requires_grad = False
+        
 
 class Qwen3VLGRPOTrainer(Trainer):
     """
@@ -151,12 +172,12 @@ class Qwen3VLGRPOTrainer(Trainer):
         self,
         model: Union[str, PreTrainedModel],
         reward_funcs: Union[RewardFunc, list[RewardFunc]],
-        args: GRPOConfig = None,
-        script_args=None,
+        args: GRPOArguments = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[
             Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]
         ] = None,
+        data_collator: Optional[Callable] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
         reward_processing_classes: Optional[
             Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]
@@ -171,66 +192,44 @@ class Qwen3VLGRPOTrainer(Trainer):
         min_pixels: Optional[int] = 3136,
         attn_implementation: str = "flash_attention_2",
     ):
-        # Args
-        if args is None:
-            model_name = model if isinstance(model, str) else model.config._name_or_path
-            model_name = model_name.split("/")[-1]
-            args = GRPOConfig(f"{model_name}-GRPO")
 
         # Models
-        model_init_kwargs = args.model_init_kwargs or {}
+        model_init_kwargs = {}
         model_init_kwargs["attn_implementation"] = attn_implementation
+        model_init_kwargs["dtype"] = (torch.bfloat16 if args.bf16 else None)
+        model_init_kwargs["cache_dir"] = args.cache_dir
+        # model_init_kwargs["use_cache"] = False if args.gradient_checkpointing else True
 
         if isinstance(model, str):
             model_id = model
-
-            torch_dtype = model_init_kwargs.get("torch_dtype")
-            if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
-                pass
-            elif isinstance(torch_dtype, str):
-                torch_dtype = getattr(torch, torch_dtype)
-                model_init_kwargs["torch_dtype"] = torch_dtype
-            else:
-                raise ValueError(
-                    "Invalid `torch_dtype` passed to `GRPOConfig`. Expected either 'auto' or a string "
-                    f"representing a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
-                )
-
-            if args.gradient_checkpointing:
-                model_init_kwargs["use_cache"] = False
-
-            if "Qwen3-VL" in model_id or "Qwen3VL" in model_id or "qwen3vl" in model_id.lower():
-                model = Qwen3VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Qwen2-VL" in model_id:
-                model = Qwen2VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Aria" in model_id:
-                model_init_kwargs.pop("use_cache", None)
-                model = AriaForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
+            if "qwen3" in model_id.lower():
+                model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             else:
                 raise ValueError(f"Unsupported model_id: {model_id}")
         else:
             model_id = model.config._name_or_path
-            if args.model_init_kwargs is not None:
-                raise ValueError(
-                    "You passed `model_init_kwargs` to the `GRPOConfig`, but your model is already instantiated. "
-                    "This argument can only be used when the `model` argument is a string."
-                )
+
+        if args.gradient_checkpointing:
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+            else:
+
+                def make_inputs_require_grad(module, input, output):
+                    output.requires_grad_(True)
+
+                model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
         if peft_config is not None:
+            for p in model.parameters():
+                p.requires_grad = False
             model = get_peft_model(model, peft_config)
+        else:
+            set_model(args, model)
 
         # Reference model
         if is_deepspeed_zero3_enabled():
-            if "Qwen3-VL" in model_id or "Qwen3VL" in model_id or "qwen3vl" in model_id.lower():
+            if "qwen3" in model_id.lower():
                 self.ref_model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
-                self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Qwen2-VL" in model_id:
-                self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Aria" in model_id:
-                self.ref_model = AriaForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             else:
                 raise ValueError(f"Unsupported model_id: {model_id}")
         elif peft_config is None:
@@ -292,44 +291,20 @@ class Qwen3VLGRPOTrainer(Trainer):
 
         self.reward_processing_classes = reward_processing_classes
 
-        # Data collator
-        def data_collator(features):
-            return features
-
         # Training arguments
-        self.max_prompt_length = args.max_prompt_length
-        self.max_completion_length = args.max_completion_length
+        self.max_input_length = args.max_input_length
+        self.max_new_tokens = args.max_output_length
         self.num_generations = args.num_generations
-        self.len_control = script_args.len_control if script_args is not None else False
         self.beta = args.beta
 
         self.generation_config = GenerationConfig(
-            max_new_tokens=self.max_completion_length,
+            max_new_tokens=self.max_new_tokens,
             do_sample=True,
             top_p=0.95,
             temperature=1.0,
             num_return_sequences=self.num_generations,
             pad_token_id=pad_token_id,
         )
-
-        # Optional: keep merge_size/get_rope_index for explicit position_ids
-        self.merge_size = getattr(processing_class.image_processor, "merge_size", 2) \
-            if hasattr(processing_class, "image_processor") else 2
-
-        if script_args is not None and hasattr(script_args, "model_type"):
-            model_type = script_args.model_type
-            if model_type == "qwen3vl":
-                self.get_rope_index = get_rope_index_3
-            elif model_type == "qwen2.5vl":
-                self.get_rope_index = get_rope_index_25
-            elif model_type == "qwen2vl":
-                self.get_rope_index = get_rope_index_2
-            else:
-                self.get_rope_index = None
-        else:
-            self.get_rope_index = None
-
-        model.warnings_issued["estimate_tokens"] = True
 
         # Metrics
         self._metrics = defaultdict(list)
@@ -363,13 +338,14 @@ class Qwen3VLGRPOTrainer(Trainer):
                     evaluation_mode=True,
                 )
 
+
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
         # By default, this method sets `self._signature_columns` to the model's expected inputs.
         # In GRPOTrainer, we preprocess data, so using the model's signature columns doesn't work.
         # Instead, we set them to the columns expected by the `training_step` method, hence the override.
         if self._signature_columns is None:
-            self._signature_columns = ["prompt"]
+            self._signature_columns = ["user", "gt"]
 
 
     # Get the per-token log probabilities for the completions for the model and the reference model
@@ -387,6 +363,7 @@ class Qwen3VLGRPOTrainer(Trainer):
             token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
             per_token_logps.append(token_log_prob)
         return torch.stack(per_token_logps)
+
 
     # Trainer "prepares" the inputs before calling `compute_loss`. It converts to tensor and move to device.
     # Since we preprocess the data in `compute_loss`, we need to override this method to skip this step.
@@ -421,89 +398,112 @@ class Qwen3VLGRPOTrainer(Trainer):
 
         batch_size = len(user_messages)
 
-        # batch generation uses left padding
-        self.processing_class.tokenizer.padding_side = "left"
-
         # build model inputs directly from chat template
         # all data are video samples
-        prompt_inputs = self.processing_class.apply_chat_template(
-            user_messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-            padding=True,
-        )
+        try:
+            inputs = self.processing_class.apply_chat_template(
+                user_messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+                padding=True,
+            )
+        except Exception as e:
+            print(f"apply_chat_template failed: {e}")
+            for idx, msg in enumerate(user_messages):
+                print(f"bad sample {idx}: {msg}")
+            raise
 
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        # converts to tensor and move to device
+        inputs = super()._prepare_inputs(inputs)
 
-        if self.max_prompt_length is not None:
-            prompt_inputs["input_ids"] = prompt_inputs["input_ids"][:, -self.max_prompt_length :]
-            prompt_inputs["attention_mask"] = prompt_inputs["attention_mask"][:, -self.max_prompt_length :]
+        # we pad on the left
+        if self.max_input_length is not None:
+            inputs["input_ids"] = inputs["input_ids"][:, -self.max_input_length:]
+            inputs["attention_mask"] = inputs["attention_mask"][:, -self.max_input_length:]
 
-        prompt_ids = prompt_inputs["input_ids"]
-        prompt_mask = prompt_inputs["attention_mask"]
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
 
+        # print("input_ids shape:", inputs["input_ids"].shape)
+        # print("attention_mask shape:", inputs["attention_mask"].shape)
+
+        # if "pixel_values_videos" in inputs:
+        #     print("pixel_values_videos shape:", inputs["pixel_values_videos"].shape)
+
+        # if "video_grid_thw" in inputs:
+        #     print("video_grid_thw shape:", inputs["video_grid_thw"].shape)
+        #     print("video_grid_thw:", inputs["video_grid_thw"])
+
+        # for idx, msg in enumerate(user_messages):
+        #     print(f"\n===== sample {idx} =====")
+        #     print(msg)
+    
         # generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
-            prompt_completion_ids = unwrapped_model.generate(
-                **prompt_inputs,
+            model_output_ids = unwrapped_model.generate(
+                **inputs,
                 generation_config=self.generation_config,
-            )
+            )   # [B * G, L]
 
-        prompt_length = prompt_ids.size(1)
-        completion_ids = prompt_completion_ids[:, prompt_length:]
-        prompt_mask = prompt_mask.repeat_interleave(self.num_generations, dim=0)
+        prompt_length = input_ids.size(1)
+        model_answer_ids = model_output_ids[:, prompt_length:]
+        attention_mask_answer = torch.ones_like(model_answer_ids, device=device)
+        attention_mask_for_logps = attention_mask.repeat_interleave(self.num_generations, dim=0)
+        attention_mask_for_logps = torch.cat([attention_mask_for_logps, attention_mask_answer], dim=1)
+
+        num_total = model_answer_ids.size(0)
+        answer_length = model_answer_ids.size(1)
 
         # mask everything after first EOS
         eos_token_id = self.processing_class.tokenizer.eos_token_id
-        is_eos = completion_ids == eos_token_id
+        is_eos = model_answer_ids == eos_token_id
         eos_idx = torch.full(
-            (is_eos.size(0),),
-            is_eos.size(1),
+            (num_total,),
+            answer_length,  # default to answer_length, meaning no EOS found
             dtype=torch.long,
             device=device,
         )
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
-        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        sequence_indices = torch.arange(answer_length, device=device).expand(num_total, -1)
+        model_output_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()    # [num_total, answer_length]
 
         # prepare kwargs for forward logp computation
-        prompt_inputs_for_logps = {
-            k: v for k, v in prompt_inputs.items()
-            if k not in ["input_ids", "attention_mask"]
+        inputs_for_logps = {
+            k: v for k, v in inputs.items()
+            if k not in ["input_ids"]
         }
 
-        # all data are video, so directly expand video tensors from B -> B*G
-        num_total = prompt_completion_ids.size(0)
-        repeat_factor = num_total // batch_size
-
-        if "pixel_values_videos" in prompt_inputs_for_logps:
-            prompt_inputs_for_logps["pixel_values_videos"] = prompt_inputs_for_logps["pixel_values_videos"].repeat_interleave(
-                repeat_factor, dim=0
+        # expand video tensors from B -> B*G
+        inputs_for_logps["attention_mask"] = attention_mask_for_logps
+        
+        if "pixel_values_videos" in inputs_for_logps:
+            inputs_for_logps["pixel_values_videos"] = inputs_for_logps["pixel_values_videos"].repeat_interleave(
+                self.num_generations, dim=0
             )
 
-        if "video_grid_thw" in prompt_inputs_for_logps:
-            prompt_inputs_for_logps["video_grid_thw"] = prompt_inputs_for_logps["video_grid_thw"].repeat_interleave(
-                repeat_factor, dim=0
+        if "video_grid_thw" in inputs_for_logps:
+            inputs_for_logps["video_grid_thw"] = inputs_for_logps["video_grid_thw"].repeat_interleave(
+                self.num_generations, dim=0
             )
 
-        if "second_per_grid_ts" in prompt_inputs_for_logps:
+        if "second_per_grid_ts" in inputs_for_logps:
             # remove unless you know exact repeat rule for your processor output
-            del prompt_inputs_for_logps["second_per_grid_ts"]
+            del inputs_for_logps["second_per_grid_ts"]
 
         # compute model logps
         try:
             per_token_logps = self._get_per_token_logps(
                 model,
-                prompt_completion_ids,
-                **prompt_inputs_for_logps,
+                model_output_ids,
+                **inputs_for_logps,
             )
-            per_token_logps = per_token_logps[:, prompt_length - 1 :]
+            per_token_logps = per_token_logps[:, prompt_length-1:]
         except Exception as e:
             print(f"Error computing per_token_logps with video kwargs: {e}. Fallback to text-only forward.")
-            per_token_logps = self._get_per_token_logps(model, prompt_completion_ids)
-            per_token_logps = per_token_logps[:, prompt_length - 1 :]
+            per_token_logps = self._get_per_token_logps(model, model_output_ids)
+            per_token_logps = per_token_logps[:, prompt_length-1:]
 
         # compute reference logps
         with torch.inference_mode():
@@ -511,39 +511,39 @@ class Qwen3VLGRPOTrainer(Trainer):
                 if self.ref_model is not None:
                     ref_per_token_logps = self._get_per_token_logps(
                         self.ref_model,
-                        prompt_completion_ids,
-                        **prompt_inputs_for_logps,
+                        model_output_ids,
+                        **inputs_for_logps,
                     )
                 else:
                     with self.accelerator.unwrap_model(model).disable_adapter():
                         ref_per_token_logps = self._get_per_token_logps(
                             model,
-                            prompt_completion_ids,
-                            **prompt_inputs_for_logps,
+                            model_output_ids,
+                            **inputs_for_logps,
                         )
-                ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1 :]
+                ref_per_token_logps = ref_per_token_logps[:, prompt_length-1:]
             except Exception as e:
                 print(f"Error computing ref_per_token_logps with video kwargs: {e}. Fallback to text-only forward.")
                 with self.accelerator.unwrap_model(model).disable_adapter():
-                    ref_per_token_logps = self._get_per_token_logps(model, prompt_completion_ids)
-                ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1 :]
+                    ref_per_token_logps = self._get_per_token_logps(model, model_output_ids)
+                ref_per_token_logps = ref_per_token_logps[:, prompt_length-1:]
 
         # KL divergence
         x_clamped = torch.clamp(ref_per_token_logps - per_token_logps, min=-10, max=10)
         per_token_kl = torch.exp(x_clamped) - x_clamped - 1
 
-        # decode completions
-        completions = self.processing_class.batch_decode(
-            completion_ids,
+        # decode text
+        model_answer_raw_text = self.processing_class.batch_decode(
+            model_answer_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
 
         # build reward inputs
-        gt_texts = [self._extract_text_from_message_list(x) for x in gt_messages]
-        expanded_gt_texts = [gt for gt in gt_texts for _ in range(self.num_generations)]
+        gt_answers_raw_text = [self._extract_text_from_message_list(x) for x in gt_messages]
+        expanded_gt_answers_raw_text = [gt for gt in gt_answers_raw_text for _ in range(self.num_generations)]
 
-        prompts_text = [
+        model_input_raw_text = [
             self.processing_class.apply_chat_template(
                 msg,
                 tokenize=False,
@@ -551,19 +551,19 @@ class Qwen3VLGRPOTrainer(Trainer):
             )
             for msg in user_messages
         ]
-        expanded_prompts = [p for p in prompts_text for _ in range(self.num_generations)]
+        expanded_model_input_raw_text = [p for p in model_input_raw_text for _ in range(self.num_generations)]
 
         rewards_per_func = torch.zeros(
-            len(expanded_prompts),
+            len(expanded_model_input_raw_text),
             len(self.reward_funcs),
             device=device,
         )
 
         for i, reward_func in enumerate(self.reward_funcs):
             output_reward_func = reward_func(
-                prompts=expanded_prompts,
-                completions=completions,
-                gt=expanded_gt_texts,
+                model_input=expanded_model_input_raw_text,
+                model_output=model_answer_raw_text,
+                ground_truth=expanded_gt_answers_raw_text,
             )
             rewards_per_func[:, i] = torch.tensor(
                 output_reward_func,
@@ -572,17 +572,6 @@ class Qwen3VLGRPOTrainer(Trainer):
             )
 
         rewards = rewards_per_func.sum(dim=1)
-
-        # optional length control
-        if self.len_control:
-            mask = rewards_per_func[:, 0] > 0.1
-            length_list = completion_mask.sum(1)
-            selected_indices = torch.nonzero(mask, as_tuple=True)[0].tolist()
-
-            if len(selected_indices) > 1:
-                for idx in selected_indices:
-                    if 320 <= length_list[idx] <= 512:
-                        rewards[idx] += 0.2
 
         # grouped rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
@@ -597,11 +586,11 @@ class Qwen3VLGRPOTrainer(Trainer):
         per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         per_token_loss = -(per_token_loss - self.beta * per_token_kl)
 
-        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+        loss = ((per_token_loss * model_output_mask).sum(dim=1) / model_output_mask.sum(dim=1)).mean()
 
         # logging
-        completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-        self._metrics["completion_length"].append(completion_length)
+        model_output_length = self.accelerator.gather_for_metrics(model_output_mask.sum(1)).float().mean().item()
+        self._metrics["model_output_length"].append(model_output_length)
 
         reward_per_func = self.accelerator.gather_for_metrics(rewards_per_func).mean(0)
         for i, reward_func in enumerate(self.reward_funcs):
@@ -632,7 +621,7 @@ class Qwen3VLGRPOTrainer(Trainer):
             self.accelerator.gather_for_metrics(std_grouped_rewards).mean().item()
         )
 
-        mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+        mean_kl = ((per_token_kl * model_output_mask).sum(dim=1) / model_output_mask.sum(dim=1)).mean()
         self._metrics["kl"].append(
             self.accelerator.gather_for_metrics(mean_kl).mean().item()
         )
@@ -647,3 +636,6 @@ class Qwen3VLGRPOTrainer(Trainer):
         else:  # transformers<=4.46
             super().log(logs)
         self._metrics.clear()
+    
+    
+Qwen3VLGRPOTrainer.create_optimizer = create_optimizer

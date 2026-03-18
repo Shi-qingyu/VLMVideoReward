@@ -25,7 +25,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from trainer import replace_qwen2_vl_attention_class
+from qwenvl.train.sft_trainer import replace_qwen2_vl_attention_class
 
 from transformers import (
     Qwen2VLForConditionalGeneration,
@@ -100,15 +100,7 @@ def train(attn_implementation="flash_attention_2"):
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
 
-    if "qwen3" in model_args.model_name_or_path.lower() and "a" in Path(model_args.model_name_or_path.rstrip("/")).name.lower():
-        model = Qwen3VLMoeForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            dtype=(torch.bfloat16 if training_args.bf16 else None),
-        )
-        data_args.model_type = "qwen3vl"
-    elif "qwen3" in model_args.model_name_or_path.lower():
+    if "qwen3" in model_args.model_name_or_path.lower():
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -177,7 +169,7 @@ def train(attn_implementation="flash_attention_2"):
         )
         model = get_peft_model(model, lora_config)
     else:
-        set_model(model_args, model)
+        set_model(training_args, model)
 
         if torch.distributed.get_rank() == 0:
             model.model.print_trainable_parameters()

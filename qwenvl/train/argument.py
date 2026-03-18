@@ -6,9 +6,6 @@ from typing import Dict, Optional, Sequence, List
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="Qwen/Qwen2.5-VL-3B-Instruct")
-    tune_mm_llm: bool = field(default=False)
-    tune_mm_mlp: bool = field(default=False)
-    tune_mm_vision: bool = field(default=False)
 
 @dataclass
 class DataArguments:
@@ -37,6 +34,9 @@ class TrainingArguments(transformers.TrainingArguments):
             "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."
         },
     )
+    tune_mm_llm: bool = field(default=False)
+    tune_mm_mlp: bool = field(default=False)
+    tune_mm_vision: bool = field(default=False)
     mm_projector_lr: Optional[float] = None
     vision_tower_lr: Optional[float] = None
 
@@ -51,11 +51,28 @@ class TrainingArguments(transformers.TrainingArguments):
 class GRPOArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
-    model_max_length: int = field(
+    max_output_length: int = field(
         default=512,
         metadata={
             "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."
         },
     )
+    max_input_length: int = field(
+        default=512,
+        metadata={
+            "help": "Maximum input sequence length. Sequences will be right padded (and possibly truncated)."
+        },
+    )
+    tune_mm_llm: bool = field(default=False)
+    tune_mm_mlp: bool = field(default=False)
+    tune_mm_vision: bool = field(default=False)
     mm_projector_lr: Optional[float] = None
     vision_tower_lr: Optional[float] = None
+    num_generations: int = field(default=8)
+    beta: float = field(default=0.04)
+
+    ## Lora config
+    lora_enable: bool = field(default=False)
+    lora_r: int = field(default=64)
+    lora_alpha: int = field(default=128)
+    lora_dropout: float = field(default=0.0)

@@ -5,7 +5,7 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
     "output/qwen3vl-2b-baseline/checkpoint-450", dtype="auto", device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline/checkpoint-450")
 
 messages = [
     {
