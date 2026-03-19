@@ -37,7 +37,7 @@ from qwenvl.train.argument import (
     DataArguments,
     GRPOArguments,
 )
-from qwenvl.train.grpo_trainer import Qwen3VLGRPOTrainer
+from qwenvl.train.trainer_grpo import Qwen3VLGRPOTrainer
 from qwenvl.train.reward_func import acc_reward, format_reward
 from transformers import AutoProcessor, Trainer
 

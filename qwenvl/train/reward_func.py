@@ -25,7 +25,7 @@ def normalize_label(x: str) -> str:
     # keep only the leading semantic label when model generates extra words
     # e.g. "yes, because ..." -> "yes"
     #      "good alignment"   -> "good"
-    x = re.split(r"[\s,;:，；：]+", x)[0] if x else "fail"
+    x = re.split(r"[\s,;:]+", x)[0] if x else "fail"
 
     yes_set = {
         "yes", "good", "true", "correct", "present", "exists", "aligned", "match", "matched", "plausible"
@@ -69,7 +69,7 @@ def parse_answer_block(answer_text: str) -> Dict[str, str]:
         match = re.search(pattern, answer_text, re.I)
         if match:
             value = match.group(1).strip()
-            value = value.rstrip("。").rstrip(".").strip()
+            value = value.rstrip(".").strip()
             answer_dict[key] = value
         else:
             answer_dict[key] = "Fail"
@@ -109,8 +109,18 @@ def acc_reward(model_output: List[str], ground_truth: List[str], **kwargs) -> Li
             gt_val = normalize_label(gt_dict[key])
             if pred_val == gt_val:
                 cnt += 1
+        if cnt == 7:
+            reward = 1.0
+        elif cnt == 6:
+            reward = 0.7
+        elif cnt == 5:
+            reward = 0.4
+        elif cnt == 4:
+            reward = 0.2
+        else:
+            reward = 0
 
-        ret.append(cnt / len(EXPECTED_KEYS))
+        ret.append(reward)
 
     return ret
 
@@ -123,25 +133,7 @@ def format_reward(model_output: List[str], **kwargs) -> List[float]:
     """
     pattern = r"^\s*<think>.*?</think>\s*<answer>.*?</answer>\s*$"
     matches = [re.match(pattern, str(content), re.S | re.I) for content in model_output]
-    return [0.2 if match else 0.0 for match in matches]
-
-
-def field_reward(model_output: List[str], **kwargs) -> List[float]:
-    """
-    Reward for whether all expected answer fields appear.
-    Returns a dense score in [0, 0.2].
-    """
-    rewards = []
-
-    for output in model_output:
-        _, answer_dict = parse_output(output)
-        hit = 0
-        for key in EXPECTED_KEYS:
-            if answer_dict[key] != "Fail":
-                hit += 1
-        rewards.append(0.2 * hit / len(EXPECTED_KEYS))
-
-    return rewards
+    return [0.3 if match else 0.0 for match in matches]
 
 
 def think_reward(model_output: List[str], **kwargs) -> List[float]:

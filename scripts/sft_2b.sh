@@ -24,7 +24,7 @@ entry_file=qwenvl/train/train_qwen_sft.py
 datasets=videoreward
 
 # Output configuration
-run_name="qwen3vl-2b-baseline"
+run_name="qwen3vl-2b-baseline-1e-5-bs16-ga4"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -39,7 +39,7 @@ args="
     --using_cot True \
     --bf16 \
     --output_dir ${output_dir} \
-    --num_train_epochs 2 \
+    --num_train_epochs 1 \
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
@@ -66,3 +66,7 @@ torchrun --nproc_per_node=${NPROC_PER_NODE} \
          --master_addr=${MASTER_ADDR} \
          --master_port=${MASTER_PORT} \
          ${entry_file} ${args}
+
+
+cd /mnt/bn/xiangtai-training-data-video/scripts
+bash run.sh

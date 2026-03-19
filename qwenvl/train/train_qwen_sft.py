@@ -25,7 +25,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from qwenvl.train.sft_trainer import replace_qwen2_vl_attention_class
+from qwenvl.train.trainer_sft import replace_qwen2_vl_attention_class
 
 from transformers import (
     Qwen2VLForConditionalGeneration,
@@ -155,9 +155,6 @@ def train(attn_implementation="flash_attention_2"):
     if training_args.lora_enable:
         from peft import LoraConfig, get_peft_model, TaskType
         print("LoRA enabled")
-
-        for p in model.parameters():
-            p.requires_grad = False
 
         lora_config = LoraConfig(
             r=training_args.lora_r or 64,

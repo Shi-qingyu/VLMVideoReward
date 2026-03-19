@@ -10,21 +10,21 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 deepspeed=./scripts/zero3.json
 
 # Model configuration
-llm=output/qwen3vl-2b-baseline-1e-bs16-ga4/checkpoint-225  # Using HuggingFace model ID
+llm=Qwen/Qwen3-VL-2B-Instruct  # Using HuggingFace model ID
 
 # Training hyperparameters
-lr=2e-6
+lr=5e-5
 batch_size=4
 grad_accum_steps=4
 
 # Training entry point
-entry_file=qwenvl/train/train_qwen_grpo.py 
+entry_file=qwenvl/train/train_qwen_sft.py 
 
 # Dataset configuration (replace with public dataset names)
 datasets=videoreward
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-grpo"
+run_name="qwen3vl-2b-baseline-1e-bs16-ga4-lora"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -32,13 +32,14 @@ args="
     --deepspeed ${deepspeed} \
     --model_name_or_path "${llm}" \
     --dataset_use ${datasets} \
-    --tune_mm_vision False \
-    --tune_mm_mlp False \
-    --tune_mm_llm True \
+    --data_flatten True \
     --using_cot True \
     --bf16 \
     --output_dir ${output_dir} \
     --num_train_epochs 1 \
+    --tune_mm_vision False \
+    --tune_mm_mlp False \
+    --tune_mm_llm True \
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
@@ -46,18 +47,18 @@ args="
     --min_pixels 784 \
     --eval_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 20 \
+    --save_steps 1000 \
     --save_total_limit 1 \
     --learning_rate ${lr} \
     --weight_decay 0 \
     --warmup_ratio 0.03 \
     --max_grad_norm 1 \
+    --lora_enable True \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --max_output_length 512 \
-    --max_input_length 16384 \
-    --gradient_checkpointing True \
-    --dataloader_num_workers 8 \
+    --model_max_length 8192 \
+    --gradient_checkpointing False \
+    --dataloader_num_workers 4 \
     --run_name ${run_name} \
     --report_to wandb"
 

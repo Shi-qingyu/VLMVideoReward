@@ -13,7 +13,7 @@ messages = [
         "content": [
             {
                 "type": "video",
-                "video": "data/videos/eval_0/0.mp4",
+                "video": "data/videos/eval_0/1.mp4",
             },
             {
                 "type": "text", 

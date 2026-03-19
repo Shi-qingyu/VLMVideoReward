@@ -42,7 +42,7 @@ from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
 from qwenvl.train.argument import GRPOArguments
-from qwenvl.train.sft_trainer import create_optimizer
+from qwenvl.train.trainer_sft import create_optimizer
 
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 
@@ -198,7 +198,6 @@ class Qwen3VLGRPOTrainer(Trainer):
         model_init_kwargs["attn_implementation"] = attn_implementation
         model_init_kwargs["dtype"] = (torch.bfloat16 if args.bf16 else None)
         model_init_kwargs["cache_dir"] = args.cache_dir
-        # model_init_kwargs["use_cache"] = False if args.gradient_checkpointing else True
 
         if isinstance(model, str):
             model_id = model
@@ -210,6 +209,7 @@ class Qwen3VLGRPOTrainer(Trainer):
             model_id = model.config._name_or_path
 
         if args.gradient_checkpointing:
+            assert peft_config is None, "gradient checkpointing is not compatiable with lora!"
             if hasattr(model, "enable_input_require_grads"):
                 model.enable_input_require_grads()
             else:
@@ -220,8 +220,6 @@ class Qwen3VLGRPOTrainer(Trainer):
                 model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
         if peft_config is not None:
-            for p in model.parameters():
-                p.requires_grad = False
             model = get_peft_model(model, peft_config)
         else:
             set_model(args, model)
@@ -475,7 +473,7 @@ class Qwen3VLGRPOTrainer(Trainer):
             if k not in ["input_ids"]
         }
 
-        # expand video tensors from B -> B*G
+        # expand video tensors from B -> B * G
         inputs_for_logps["attention_mask"] = attention_mask_for_logps
         
         if "pixel_values_videos" in inputs_for_logps:
@@ -600,18 +598,18 @@ class Qwen3VLGRPOTrainer(Trainer):
                 reward_func_name = reward_func.__name__
             self._metrics[f"rewards/{reward_func_name}"].append(reward_per_func[i].item())
 
-        gathered_rewards = self.accelerator.gather_for_metrics(rewards)
-        num_devices = gathered_rewards.size(0) // self.num_generations
-        rewards_per_device = gathered_rewards.view(num_devices, self.num_generations)
+        # gathered_rewards = self.accelerator.gather_for_metrics(rewards)
+        # num_devices = gathered_rewards.size(0) // self.num_generations
+        # rewards_per_device = gathered_rewards.view(num_devices, self.num_generations)
 
-        wrong_devices = (rewards_per_device <= 1).all(dim=1)
-        wrong_ratio = wrong_devices.sum().item() / num_devices
+        # wrong_devices = (rewards_per_device <= 1).all(dim=1)
+        # wrong_ratio = wrong_devices.sum().item() / num_devices
 
-        correct_devices = (rewards_per_device >= 2).all(dim=1)
-        correct_ratio = correct_devices.sum().item() / num_devices
+        # correct_devices = (rewards_per_device >= 2).all(dim=1)
+        # correct_ratio = correct_devices.sum().item() / num_devices
 
-        self._metrics["all_wrong"].append(wrong_ratio)
-        self._metrics["all_correct"].append(correct_ratio)
+        # self._metrics["all_wrong"].append(wrong_ratio)
+        # self._metrics["all_correct"].append(correct_ratio)
 
         self._metrics["reward"].append(
             self.accelerator.gather_for_metrics(rewards).mean().item()
