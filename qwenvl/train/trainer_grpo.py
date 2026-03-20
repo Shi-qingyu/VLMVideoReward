@@ -82,7 +82,25 @@ def set_model(model_args, model):
         for n, p in model.model.language_model.named_parameters():
             p.requires_grad = False
         model.lm_head.requires_grad = False
-        
+
+
+def token_length_reward_from_tensor(
+    token_lengths: torch.Tensor,
+    min_len: int = 40,
+    target_len: int = 80,
+    max_len: int = 140,
+    max_reward: float = 0.12,
+):
+    rewards = torch.zeros_like(token_lengths, dtype=torch.float32)
+
+    inc_mask = (token_lengths >= min_len) & (token_lengths <= target_len)
+    dec_mask = (token_lengths > target_len) & (token_lengths <= max_len)
+
+    rewards[inc_mask] = max_reward * (token_lengths[inc_mask] - min_len) / max(1, target_len - min_len)
+    rewards[dec_mask] = max_reward * (max_len - token_lengths[dec_mask]) / max(1, max_len - target_len)
+
+    return torch.clamp(rewards, min=0.0)
+
 
 class Qwen3VLGRPOTrainer(Trainer):
     """
@@ -569,7 +587,19 @@ class Qwen3VLGRPOTrainer(Trainer):
                 device=device,
             )
 
-        rewards = rewards_per_func.sum(dim=1)
+        token_lengths = model_output_mask.sum(dim=1).float()
+        length_rewards = token_length_reward_from_tensor(
+            token_lengths,
+            min_len=40,
+            target_len=80,
+            max_len=140,
+            max_reward=0.2,
+        )
+        
+        rewards = rewards_per_func.sum(dim=1) + length_rewards
+    
+        gathered_length_rewards = self.accelerator.gather_for_metrics(length_rewards)
+        self._metrics["rewards/length_reward"].append(gathered_length_rewards.mean().item())
 
         # grouped rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)

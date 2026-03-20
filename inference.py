@@ -2,10 +2,10 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 # default: Load the model on the available device(s)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "output/qwen3vl-2b-baseline/checkpoint-450", dtype="auto", device_map="auto"
+    "output/qwen3vl-4b-baseline/checkpoint-900", dtype="auto", device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline/checkpoint-450")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-4b-baseline/checkpoint-900")
 
 messages = [
     {
@@ -13,7 +13,7 @@ messages = [
         "content": [
             {
                 "type": "video",
-                "video": "data/videos/eval_0/1.mp4",
+                "video": "data/videos/eval_0/0.mp4",
             },
             {
                 "type": "text", 

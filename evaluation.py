@@ -30,7 +30,6 @@ def normalize_label(text: str) -> str:
 
     text = str(text).strip().lower()
 
-    # 兼容你的 old eval 逻辑
     text = text.replace("good", "yes").replace("bad", "no")
 
     if text in ["yes", "y", "true", "1"]:
@@ -70,6 +69,10 @@ def calculate_score(outputs):
         _, gt_dict = parse_output(gt)
 
         for key in EXPECTED_KEYS:
+            if gt_dict[key].lower() == "fail":
+                # print(gt_dict[key])
+                continue
+            
             if pred_dict[key] == gt_dict[key]:
                 score += 1
             cnt += 1
@@ -284,7 +287,7 @@ def save_metrics(metrics, summary, output_path):
 
 
 def run_inference(args):
-    model_name = os.path.basename(os.path.normpath(args.model_path))
+    model_name = args.model_path.split("/")[1]
     output_dir = "eval_results"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, model_name + ".json")
