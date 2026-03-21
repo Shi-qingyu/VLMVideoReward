@@ -2,10 +2,10 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 # default: Load the model on the available device(s)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "output/qwen3vl-4b-baseline/checkpoint-900", dtype="auto", device_map="auto"
+    "output/qwen3vl-2b-baseline-1e-bs4-ga4-filtered", dtype="auto", device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-4b-baseline/checkpoint-900")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-filtered")
 
 messages = [
     {
@@ -29,7 +29,8 @@ inputs = processor.apply_chat_template(
     tokenize=True,
     add_generation_prompt=True,
     return_dict=True,
-    return_tensors="pt"
+    return_tensors="pt",
+    fps=2
 )
 inputs = inputs.to(model.device)
 

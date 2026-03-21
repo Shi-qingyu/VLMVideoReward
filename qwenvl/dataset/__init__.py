@@ -31,6 +31,16 @@ VIDEOREWARD = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_FILTERED = {
+    "annotation_path": "./data/train_filtered.json",
+    "data_path": "./data",
+}
+
+VIDEOREWARD_POLISHED = {
+    "annotation_path": "./data/train_polished.json",
+    "data_path": "./data",
+}
+
 VIDEOREWARD_EVAL = {
     "annotation_path": "./data/eval.json",
     "data_path": "./data",
@@ -43,6 +53,7 @@ data_dict = {
     "clevr_mc": CLEVR_MC,
     "videochatgpt": VIDEOCHATGPT,
     "videoreward": VIDEOREWARD,
+    "videoreward_filtered": VIDEOREWARD_FILTERED,
     "videoreward_eval": VIDEOREWARD_EVAL,
 }
 
