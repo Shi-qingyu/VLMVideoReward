@@ -190,6 +190,7 @@ class Qwen3VLGRPOTrainer(Trainer):
         self,
         model: Union[str, PreTrainedModel],
         reward_funcs: Union[RewardFunc, list[RewardFunc]],
+        reward_func_weights: list[float],
         args: GRPOArguments = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[
@@ -283,6 +284,8 @@ class Qwen3VLGRPOTrainer(Trainer):
                     **model_init_kwargs,
                 )
         self.reward_funcs = reward_funcs
+        self.reward_func_weights = reward_func_weights
+        assert len(self.reward_funcs) == len(self.reward_func_weights)
 
         # Reward processing classes
         if reward_processing_classes is None:
@@ -309,15 +312,15 @@ class Qwen3VLGRPOTrainer(Trainer):
 
         # Training arguments
         self.max_input_length = args.max_input_length
-        self.max_new_tokens = args.max_output_length
+        self.max_new_tokens = args.max_new_tokens
         self.num_generations = args.num_generations
         self.beta = args.beta
 
         self.generation_config = GenerationConfig(
             max_new_tokens=self.max_new_tokens,
             do_sample=True,
-            top_p=0.95,
-            temperature=1.0,
+            top_p=args.top_p,
+            temperature=args.temperature,
             num_return_sequences=self.num_generations,
             pad_token_id=pad_token_id,
         )
@@ -441,20 +444,6 @@ class Qwen3VLGRPOTrainer(Trainer):
 
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
-
-        # print("input_ids shape:", inputs["input_ids"].shape)
-        # print("attention_mask shape:", inputs["attention_mask"].shape)
-
-        # if "pixel_values_videos" in inputs:
-        #     print("pixel_values_videos shape:", inputs["pixel_values_videos"].shape)
-
-        # if "video_grid_thw" in inputs:
-        #     print("video_grid_thw shape:", inputs["video_grid_thw"].shape)
-        #     print("video_grid_thw:", inputs["video_grid_thw"])
-
-        # for idx, msg in enumerate(user_messages):
-        #     print(f"\n===== sample {idx} =====")
-        #     print(msg)
     
         # generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
@@ -575,7 +564,7 @@ class Qwen3VLGRPOTrainer(Trainer):
             device=device,
         )
 
-        for i, reward_func in enumerate(self.reward_funcs):
+        for i, (reward_func, weight) in enumerate(zip(self.reward_funcs, self.reward_func_weights)):
             output_reward_func = reward_func(
                 model_input=expanded_model_input_raw_text,
                 model_output=model_answer_raw_text,
@@ -585,7 +574,7 @@ class Qwen3VLGRPOTrainer(Trainer):
                 output_reward_func,
                 dtype=torch.float32,
                 device=device,
-            )
+            ) * weight
 
         rewards = rewards_per_func.sum(dim=1)
 
@@ -627,19 +616,6 @@ class Qwen3VLGRPOTrainer(Trainer):
             else:
                 reward_func_name = reward_func.__name__
             self._metrics[f"rewards/{reward_func_name}"].append(reward_per_func[i].item())
-
-        # gathered_rewards = self.accelerator.gather_for_metrics(rewards)
-        # num_devices = gathered_rewards.size(0) // self.num_generations
-        # rewards_per_device = gathered_rewards.view(num_devices, self.num_generations)
-
-        # wrong_devices = (rewards_per_device <= 1).all(dim=1)
-        # wrong_ratio = wrong_devices.sum().item() / num_devices
-
-        # correct_devices = (rewards_per_device >= 2).all(dim=1)
-        # correct_ratio = correct_devices.sum().item() / num_devices
-
-        # self._metrics["all_wrong"].append(wrong_ratio)
-        # self._metrics["all_correct"].append(correct_ratio)
 
         self._metrics["reward"].append(
             self.accelerator.gather_for_metrics(rewards).mean().item()

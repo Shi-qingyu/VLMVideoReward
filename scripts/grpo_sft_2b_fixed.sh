@@ -2,7 +2,7 @@
 
 # Distributed training configuration
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-"12346"}
+MASTER_PORT=${MASTER_PORT:-"12345"}
 NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
@@ -12,10 +12,19 @@ deepspeed=./scripts/zero3.json
 # Model configuration
 llm=output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed  # Using HuggingFace model ID
 
+# Reward func configuration
+reward_func=acc_reward,format_reward
+reward_func_weight=1.0,0.2
+
 # Training hyperparameters
 lr=2e-6
-batch_size=4
-grad_accum_steps=1
+warmup_ratio=0.03
+lr_scheduler_type=cosine
+batch_size=2
+grad_accum_steps=2
+max_grad_norm=1
+beta=0.04
+weight_decay=0.0
 
 # Training entry point
 entry_file=qwenvl/train/train_qwen_grpo.py 
@@ -24,7 +33,7 @@ entry_file=qwenvl/train/train_qwen_grpo.py
 datasets=videoreward_fixed
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo-debug"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -32,9 +41,8 @@ args="
     --deepspeed ${deepspeed} \
     --model_name_or_path "${llm}" \
     --dataset_use ${datasets} \
-    --data_flatten True \
     --tune_mm_vision False \
-    --tune_mm_mlp True \
+    --tune_mm_mlp False \
     --tune_mm_llm True \
     --using_cot True \
     --bf16 \
@@ -50,17 +58,21 @@ args="
     --save_steps 10 \
     --save_total_limit 1 \
     --learning_rate ${lr} \
+    --warmup_ratio ${warmup_ratio} \
+    --lr_scheduler_type ${lr_scheduler_type} \
+    --reward_func ${reward_func} \
+    --reward_func_weight ${reward_func_weight} \
+    --beta ${beta} \
     --weight_decay 0 \
-    --warmup_ratio 0.03 \
-    --max_grad_norm 1 \
-    --lr_scheduler_type "cosine" \
+    --max_grad_norm ${max_grad_norm} \
     --logging_steps 1 \
-    --max_output_length 512 \
+    --max_new_tokens 512 \
     --max_input_length 16384 \
     --gradient_checkpointing True \
     --dataloader_num_workers 8 \
     --run_name ${run_name} \
-    --report_to wandb"
+    --report_to wandb
+"
 
 # Launch training
 torchrun --nproc_per_node=${NPROC_PER_NODE} \

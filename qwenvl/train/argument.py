@@ -7,6 +7,7 @@ from typing import Dict, Optional, Sequence, List
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="Qwen/Qwen2.5-VL-3B-Instruct")
 
+
 @dataclass
 class DataArguments:
     dataset_use: str = field(default="")
@@ -21,11 +22,10 @@ class DataArguments:
     video_min_pixels: int = field(default=256 * 28 * 28)
     video_fps: float = 2
     using_cot: bool = field(default=True)
-    
 
 
 @dataclass
-class TrainingArguments(transformers.TrainingArguments):
+class SFTArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
@@ -51,12 +51,6 @@ class TrainingArguments(transformers.TrainingArguments):
 class GRPOArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
-    max_output_length: int = field(
-        default=512,
-        metadata={
-            "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."
-        },
-    )
     max_input_length: int = field(
         default=16384,
         metadata={
@@ -68,8 +62,18 @@ class GRPOArguments(transformers.TrainingArguments):
     tune_mm_vision: bool = field(default=False)
     mm_projector_lr: Optional[float] = None
     vision_tower_lr: Optional[float] = None
+
+    # Sampling config
+    max_new_tokens: int = field(default=256)
     num_generations: int = field(default=8)
+    top_p: float = field(default=0.95)
+    temperature: float = field(default=1.0)
+
+    # KL penalty
     beta: float = field(default=0.04)
+
+    reward_func: str = field(default="acc_reward")
+    reward_func_weight: str = field(default="1.0")
 
     ## Lora config
     lora_enable: bool = field(default=False)

@@ -114,6 +114,7 @@ def acc_reward(
             gt_val = normalize_label(gt_dict[key])
             if pred_val == gt_val:
                 cnt += 1
+
         if cnt == 7:
             reward = 1.0
         elif cnt == 6:
@@ -143,4 +144,4 @@ def format_reward(
     """
     pattern = r"^\s*<think>.*?</think>\s*<answer>.*?</answer>\s*$"
     matches = [re.match(pattern, str(content), re.S | re.I) for content in model_output]
-    return [0.2 if match else 0.0 for match in matches]
+    return [1.0 if match else 0.0 for match in matches]

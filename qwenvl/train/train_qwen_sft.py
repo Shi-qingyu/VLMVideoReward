@@ -37,7 +37,7 @@ from qwenvl.dataset.data_processor import make_supervised_data_module
 from qwenvl.train.argument import (
     ModelArguments,
     DataArguments,
-    TrainingArguments,
+    SFTArguments,
 )
 from transformers import AutoProcessor, Trainer
 
@@ -93,7 +93,7 @@ def train(attn_implementation="flash_attention_2"):
     global local_rank
 
     parser = transformers.HfArgumentParser(
-        (ModelArguments, DataArguments, TrainingArguments)
+        (ModelArguments, DataArguments, SFTArguments)
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
