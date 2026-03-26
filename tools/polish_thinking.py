@@ -12,14 +12,6 @@ import torch
 # =========================
 # Azure OpenAI Config
 # =========================
-client = AzureOpenAI(
-    azure_endpoint="https://gpt-i18n.byteintl.net/gpt/openapi/online/multimodal/crawl",
-    api_version="2025-04-01-preview",
-    api_key="5iyrOGLAr5Xscz6WqS3Zv8ePc5as5cKL",
-    timeout=111.0
-)
-
-MODEL_NAME = "gpt-5-2025-08-07"
 
 
 # =========================
