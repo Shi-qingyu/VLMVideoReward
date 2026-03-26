@@ -2,9 +2,16 @@ import json
 import copy
 import time
 import re
+import os
 from tqdm import tqdm
 from openai import AzureOpenAI
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 
+
+# =========================
+# Azure OpenAI Config
+# =========================
 client = AzureOpenAI(
     azure_endpoint="https://gpt-i18n.byteintl.net/gpt/openapi/online/multimodal/crawl",
     api_version="2025-04-01-preview",
@@ -15,48 +22,54 @@ client = AzureOpenAI(
 MODEL_NAME = "gpt-5-2025-08-07"
 
 
+# =========================
+# Qwen3 Config
+# =========================
+QWEN_MODEL_NAME = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+qwen_tokenizer = None
+qwen_model = None
+
+
+def load_qwen_model():
+    global qwen_tokenizer, qwen_model
+    if qwen_tokenizer is None or qwen_model is None:
+        print(f"Loading Qwen model: {QWEN_MODEL_NAME}")
+        qwen_tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_NAME)
+        qwen_model = AutoModelForCausalLM.from_pretrained(
+            QWEN_MODEL_NAME,
+            torch_dtype="auto",
+            device_map="auto"
+        )
+    return qwen_tokenizer, qwen_model
+
+
 SYSTEM_PROMPT = """
 You are a text polishing assistant.
 
 Your task is to improve the fluency and clarity of the text inside the <think> section ONLY, while strictly preserving:
-1. The original structure and format
-2. All bracketed labels (e.g., [Visual Quality], [Motion & Physical Consistency], [Prompt Alignment])
-3. The number of items and their order
-4. The meaning of each statement
+1. The original structure and format (e.g., [Visual Quality], [Motion & Physical Consistency], [Prompt Alignment])
+2. The meaning of each statement
 
 Rules:
-- Rewrite each item to be natural, fluent, and grammatically correct English
-- Keep each item in the format: [Label]: sentence.
-- Do NOT merge, split, or reorder items
+- Rewrite each item to be natural, fluent, and grammatically correct English sentence
 - Do NOT modify the <answer> section in any way
-- Do NOT add or remove any information
-- Avoid redundant or awkward phring like "unable to identify gender" → make it smoother but same meaning
 
-Input:
-<think>
-[Visual Quality]: Garbage Symbols. [Motion & Physical Consistency]: Good. [Prompt Alignment]: The subject's face is not visible, unable to identify gender.
-</think>
-<answer>
-Video Quality: No. Subject Movement: Yes. Physical Interaction: Yes. Cause-Effect: Yes. Subject Existence: No. Object Existence: Yes. Subject-Object Interaction: Yes.
-</answer>
-
-Output:
-<think>
-[Visual Quality]: Contains visual artifacts or corrupted symbols. [Motion & Physical Consistency]: The motion is physically consistent. [Prompt Alignment]: The subject's face is not visible, making it impossible to determine gender.
-</think>
-<answer>
-Video Quality: No. Subject Movement: Yes. Physical Interaction: Yes. Cause-Effect: Yes. Subject Existence: No. Object Existence: Yes. Subject-Object Interaction: Yes.
-</answer>
+My input:
+{user_prompt}
 """
 
 
-def polish_with_llm(user_prompt):
+def build_prompt(user_prompt: str) -> str:
+    return SYSTEM_PROMPT.format(user_prompt=user_prompt)
+
+
+def polish_with_gpt(user_prompt: str) -> str:
+    full_prompt = build_prompt(user_prompt)
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": full_prompt}
             ],
         )
 
@@ -68,67 +81,107 @@ def polish_with_llm(user_prompt):
         return content if content else user_prompt
 
     except Exception as e:
-        print(f"API failed: {e}")
+        print(f"Azure API failed: {e}")
         return user_prompt
-    
 
-def fix_subject_object_interaction(text: str) -> str:
-    soi_pattern = r"(Subject-Object Interaction:\s*)(.*?)(?=\n|</answer>)"
-    soi_match = re.search(soi_pattern, text, re.DOTALL)
-    if not soi_match:
-        return text
 
-    value = soi_match.group(2).strip().replace("..", ".").replace(". .", ".")
+def polish_with_qwen(user_prompt: str, max_new_tokens: int = 4096) -> str:
+    full_prompt = build_prompt(user_prompt)
 
-    if value in {"Yes.", "No."}:
-        return text
+    try:
+        tokenizer, model = load_qwen_model()
 
-    pa_pattern = r"(\[Prompt Alignment\]:\s*)(.*?)(?=\s*\[.*?\]:|</think>)"
-    pa_match = re.search(pa_pattern, text, re.DOTALL)
-    if pa_match:
-        pa_prefix = pa_match.group(1)
-        pa_value = pa_match.group(2).strip()
+        messages = [
+            {"role": "user", "content": full_prompt}
+        ]
 
-        if pa_value.endswith("."):
-            new_pa_value = f"{pa_value} {value}"
-        else:
-            new_pa_value = f"{pa_value}. {value}"
-
-        text = re.sub(
-            pa_pattern,
-            f"{pa_prefix}{new_pa_value}",
-            text,
-            count=1,
-            flags=re.DOTALL
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
+        model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
-    text = re.sub(
-        soi_pattern,
-        "Subject-Object Interaction: No.",
-        text,
-        count=1,
-        flags=re.DOTALL
-    )
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False
+            )
 
-    return text
+        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+        content = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+        return content if content else user_prompt
+
+    except Exception as e:
+        print(f"Qwen polish failed: {e}")
+        return user_prompt
+
+
+def polish_text(user_prompt: str, backend: str = "azure") -> str:
+    if backend == "qwen":
+        return polish_with_qwen(user_prompt)
+    return polish_with_gpt(user_prompt)
+
+
+def save_json(data, output_path):
+    tmp_path = output_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    os.replace(tmp_path, output_path)
 
 
 if __name__ == "__main__":
-    with open("data/train_filtered.json", "r", encoding="utf-8") as f:
+    BACKEND = "azure"
+
+    input_path = "data/eval_filtered.json"
+    output_path = "data/eval_polished.json"
+
+    with open(input_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    polished_data = []
-    for item in tqdm(data, desc="Polishing with LLM", total=len(data)):
-        ori_text = item["conversations"][-1]["value"]
-        # polished_text = polish_with_llm(ori_text)
-        polished_text = fix_subject_object_interaction(ori_text)
-        if polished_text != ori_text:
-            polished_text = polished_text.replace("[Prompt Alignment]: Yes", "[Prompt Alignment]: Bad")
-            # print(polished_text)
-            # print(ori_text)
-        polished_item = copy.deepcopy(item)
-        polished_item["conversations"][-1]["value"] = polished_text
-        polished_data.append(polished_item)
-    
-    with open("data/train_polished.json", "w", encoding="utf-8") as f:
-        json.dump(polished_data, f, ensure_ascii=False, indent=4)
+    if os.path.exists(output_path):
+        with open(output_path, "r", encoding="utf-8") as f:
+            polished_data = json.load(f)
+        start_idx = len(polished_data)
+        print(f"Resume from index {start_idx}, already polished {start_idx} items.")
+    else:
+        polished_data = []
+        start_idx = 0
+
+    try:
+        for i in tqdm(range(start_idx, len(data)), desc=f"Polishing with {BACKEND}"):
+            item = data[i]
+            ori_text = item["conversations"][-1]["value"]
+
+            # polished_text = polish_text(ori_text, backend=BACKEND)
+            polished_text = fix_subject_object_interaction(ori_text)
+
+            polished_text = (
+                polished_text
+                .replace(".</think>", ".\n</think>")
+                .replace("[Prompt Alignment]: No.", "[Prompt Alignment]:")
+            )
+            polished_item = copy.deepcopy(item)
+            polished_item["conversations"][-1]["value"] = polished_text
+            polished_data.append(polished_item)
+
+            save_json(polished_data, output_path)
+
+    except KeyboardInterrupt:
+        print("\nDetected KeyboardInterrupt, saving current progress...")
+        save_json(polished_data, output_path)
+        print(f"Progress saved to {output_path}, total saved: {len(polished_data)}")
+        raise
+
+    except Exception as e:
+        print(f"\nError occurred: {e}")
+        print("Saving current progress...")
+        save_json(polished_data, output_path)
+        print(f"Progress saved to {output_path}, total saved: {len(polished_data)}")
+        raise
+
+    finally:
+        save_json(polished_data, output_path)
+        print(f"Final progress saved to {output_path}, total saved: {len(polished_data)}")

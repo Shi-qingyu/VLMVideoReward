@@ -2,10 +2,10 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 # default: Load the model on the available device(s)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "output/qwen3vl-2b-baseline-1e-bs4-ga4-filtered", dtype="auto", device_map="auto"
+    "output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo/checkpoint-200", dtype="auto", device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-filtered")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo/checkpoint-200")
 
 messages = [
     {

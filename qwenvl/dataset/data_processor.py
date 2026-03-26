@@ -518,6 +518,7 @@ class LazySupervisedDataset(Dataset):
                 )
             return new_data_dict
 
+
 def pad_and_cat(tensor_list):
     max_length = max(tensor.shape[2] for tensor in tensor_list)
 
@@ -686,6 +687,7 @@ class LazyRLDataset(Dataset):
         dataset = data_args.dataset_use.split(",")
         dataset_list = data_list(dataset)
         rank0_print(f"Loading datasets: {dataset_list}")
+        self.use_cot = getattr(data_args, "use_cot", False)
 
         list_data_dict = []
 
@@ -727,7 +729,7 @@ class LazyRLDataset(Dataset):
             cur_i = i if attempt_idx == 0 else random.randint(0, len(self.list_data_dict) - 1)
             try:
                 source = self.list_data_dict[cur_i]
-                messages = _build_messages(source, Path(source.get("data_path", "")), False)
+                messages = _build_messages(source, Path(source.get("data_path", "")), self.use_cot)
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
 

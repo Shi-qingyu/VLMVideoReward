@@ -21,10 +21,10 @@ grad_accum_steps=4
 entry_file=qwenvl/train/train_qwen_sft.py 
 
 # Dataset configuration (replace with public dataset names)
-datasets=videoreward_filtered
+datasets=videoreward_fixed
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-polished"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-fixed"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -57,7 +57,7 @@ args="
     --logging_steps 1 \
     --model_max_length 8192 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 8 \
     --run_name ${run_name} \
     --report_to wandb"
 

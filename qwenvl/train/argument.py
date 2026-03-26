@@ -58,7 +58,7 @@ class GRPOArguments(transformers.TrainingArguments):
         },
     )
     max_input_length: int = field(
-        default=512,
+        default=16384,
         metadata={
             "help": "Maximum input sequence length. Sequences will be right padded (and possibly truncated)."
         },

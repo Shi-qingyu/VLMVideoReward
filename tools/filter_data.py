@@ -1,7 +1,7 @@
 import json
 
 
-with open('data/train.json', 'r') as f:
+with open('data/eval.json', 'r') as f:
     data = json.load(f)
 
 
@@ -12,5 +12,5 @@ for item in data:
     filtered_data.append(item)
 
 print(len(filtered_data))
-with open('data/train_filtered.json', 'w') as f:
+with open('data/eval_filtered.json', 'w') as f:
     json.dump(filtered_data, f, indent=4)

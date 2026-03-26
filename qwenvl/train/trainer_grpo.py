@@ -587,19 +587,19 @@ class Qwen3VLGRPOTrainer(Trainer):
                 device=device,
             )
 
-        token_lengths = model_output_mask.sum(dim=1).float()
-        length_rewards = token_length_reward_from_tensor(
-            token_lengths,
-            min_len=40,
-            target_len=80,
-            max_len=140,
-            max_reward=0.2,
-        )
-        
-        rewards = rewards_per_func.sum(dim=1) + length_rewards
+        rewards = rewards_per_func.sum(dim=1)
+
+        # token_lengths = model_output_mask.sum(dim=1).float()
+        # length_rewards = token_length_reward_from_tensor(
+        #     token_lengths,
+        #     min_len=80,
+        #     target_len=120,
+        #     max_len=160,
+        #     max_reward=0.2,
+        # )
     
-        gathered_length_rewards = self.accelerator.gather_for_metrics(length_rewards)
-        self._metrics["rewards/length_reward"].append(gathered_length_rewards.mean().item())
+        # gathered_length_rewards = self.accelerator.gather_for_metrics(length_rewards)
+        # self._metrics["rewards/length_reward"].append(gathered_length_rewards.mean().item())
 
         # grouped rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)

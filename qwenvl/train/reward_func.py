@@ -92,7 +92,12 @@ def parse_output(text: str) -> Tuple[str, Dict[str, str]]:
     return think_content, answer_dict
 
 
-def acc_reward(model_output: List[str], ground_truth: List[str], **kwargs) -> List[float]:
+def acc_reward(
+    model_output: List[str], 
+    ground_truth: List[str], 
+    model_input: List[str],
+    **kwargs
+) -> List[float]:
     """
     Accuracy reward over the 7 fixed fields.
     Each sample gets score in [0, 1].
@@ -117,8 +122,6 @@ def acc_reward(model_output: List[str], ground_truth: List[str], **kwargs) -> Li
             reward = 0.6
         elif cnt == 4:
             reward = 0.4
-        elif cnt == 3:
-            reward = 0.2
         else:
             reward = 0
 
@@ -127,7 +130,12 @@ def acc_reward(model_output: List[str], ground_truth: List[str], **kwargs) -> Li
     return ret
 
 
-def format_reward(model_output: List[str], **kwargs) -> List[float]:
+def format_reward(
+    model_output: List[str], 
+    ground_truth: List[str], 
+    model_input: List[str],
+    **kwargs
+) -> List[float]:
     """
     Reward for basic structural format:
       <think>...</think>
@@ -136,61 +144,3 @@ def format_reward(model_output: List[str], **kwargs) -> List[float]:
     pattern = r"^\s*<think>.*?</think>\s*<answer>.*?</answer>\s*$"
     matches = [re.match(pattern, str(content), re.S | re.I) for content in model_output]
     return [0.2 if match else 0.0 for match in matches]
-
-
-def think_reward(model_output: List[str], **kwargs) -> List[float]:
-    """
-    Small reward for having non-empty <think>...</think>.
-    """
-    rewards = []
-    for output in model_output:
-        think_content, _ = parse_output(output)
-        rewards.append(0.05 if len(think_content.strip()) > 0 else 0.0)
-    return rewards
-
-
-def length_reward(
-    model_output: List[str],
-    min_len: int = 32,
-    target_len: int = 48,
-    max_len: int = 64,
-    max_reward: float = 0.15,
-    use_think_only: bool = True,
-    **kwargs
-) -> List[float]:
-    """
-    Length reward:
-    - too short: 0
-    - in [min_len, target_len]: linearly increase to max_reward
-    - in [target_len, max_len]: linearly decrease from max_reward
-    - too long: 0
-    """
-    rewards = []
-
-    for output in model_output:
-        output = "" if output is None else str(output)
-
-        if use_think_only:
-            think_content, _ = parse_output(output)
-            text = think_content.strip()
-        else:
-            text = output.strip()
-
-        cur_len = len(text)
-
-        if cur_len < min_len or cur_len > max_len:
-            reward = 0.0
-        elif cur_len <= target_len:
-            if target_len == min_len:
-                reward = max_reward
-            else:
-                reward = max_reward * (cur_len - min_len) / (target_len - min_len)
-        else:
-            if max_len == target_len:
-                reward = max_reward
-            else:
-                reward = max_reward * (max_len - cur_len) / (max_len - target_len)
-
-        rewards.append(max(0.0, reward))
-
-    return rewards
