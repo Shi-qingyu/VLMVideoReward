@@ -145,3 +145,15 @@ def format_reward(
     pattern = r"^\s*<think>.*?</think>\s*<answer>.*?</answer>\s*$"
     matches = [re.match(pattern, str(content), re.S | re.I) for content in model_output]
     return [1.0 if match else 0.0 for match in matches]
+
+
+def pseudo_reward(
+    model_output: List[str], 
+    ground_truth: List[str], 
+    model_input: List[str],
+    **kwargs
+) -> List[float]:
+    """
+    pseudo_reward
+    """
+    return [1.0 for _ in model_output]

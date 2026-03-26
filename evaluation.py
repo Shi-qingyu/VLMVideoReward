@@ -47,7 +47,7 @@ def parse_output(text: str):
     parsed = {}
     for key in EXPECTED_KEYS:
         # Robust regex for Key: Value
-        pattern = rf"{re.escape(key)}\s*[:：]\s*(\w+)"
+        pattern = rf"{re.escape(key)}\s*[:]\s*(\w+)"
         match = re.search(pattern, body, re.I)
         parsed[key] = normalize_label(match.group(1)) if match else "fail"
     return parsed
@@ -58,13 +58,14 @@ def safe_div(a: float, b: float) -> float:
 
 def calculate_metrics(outputs):
     stats = {key: defaultdict(int) for key in EXPECTED_KEYS}
+    
 
     for item in outputs:
         pred_dict = parse_output(item["answer"])
         gt_dict = parse_output(item["ground_truth"])
 
         for key in EXPECTED_KEYS:
-            p = pred_dict[key]
+            p = pred_dict.get(key, "fail")
             g = gt_dict[key]
 
             if g not in ["yes", "no"]: continue
@@ -91,8 +92,9 @@ def calculate_metrics(outputs):
         f1 = safe_div(2 * prec * rec, prec + rec)
         metrics[key] = {**s, "accuracy": acc, "precision": prec, "recall": rec, "f1": f1}
     
+    print(metrics)
     all_fields = ["tp", "tn", "fp", "fn", "correct", "total", "gt_yes", "gt_no"]
-    summary = {f: sum(metrics[k][f] for k in EXPECTED_KEYS) for f in all_fields}
+    summary = {f: sum(metrics[k].get(f, 0) for k in EXPECTED_KEYS) for f in all_fields}
     summary["accuracy"] = safe_div(summary["correct"], summary["total"])
     summary["precision"] = safe_div(summary["tp"], summary["tp"] + summary["fp"])
     summary["recall"] = safe_div(summary["tp"], summary["tp"] + summary["fn"])
@@ -124,7 +126,7 @@ def print_table(metrics, summary):
 
 @torch.inference_mode()
 def run_eval(args):
-    model_name = os.path.basename(args.model_path.rstrip("/"))
+    model_name = args.model_path.split("/")[1]
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, f"{model_name}.json")
 
@@ -138,6 +140,8 @@ def run_eval(args):
             except json.JSONDecodeError:
                 print("Warning: JSON file corrupted or empty. Starting from scratch.")
                 results = []
+        metrics, summary = calculate_metrics(results)
+        print_table(metrics, summary)
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(args.model_path, torch_dtype="auto", device_map="auto")
     processor = AutoProcessor.from_pretrained(args.model_path)

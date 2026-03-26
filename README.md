@@ -3,7 +3,7 @@
 This repository provides a training framework for Qwen VL models. The are two steps to use our repo:
 
 1. Customize your dataset: downloading data, implement the config
-2. Modify training scripts: 
+2. Modify training scripts:
 
 ## Repository Structure
 
@@ -14,41 +14,22 @@ The `qwenvl` directory contains the following components:
 - `train_qwen.py`: Main file for training
 - `argument.py`: Dataclasses for model, data and training arguments
 
-### `data/`
+### `dataset/`
 - `__init__.py`: Contains datasets configs
 - `data_processor.py`: Data processing module for QwenVL models
 - `rope2d.py`: Provide RoPE implementation
 
-### `tools`
-- `process_bbox.ipynb`: Convert bbox into QwenVL format. If you have grounding data, please refer this file to tranform your data.
-- `pack_data.py`: Pack data into even length buckets.
-
 ## Requirements
 
-You could use follow version of packages:
+You could install packages through:
 
-- `torch==2.6.0`
-- `torchvision==0.21.0`
-- `transformers==4.57.0.dev0`
-- `deepspeed==0.17.1`
-- `flash_attn==2.7.4.post1`
-- `triton==3.2.0`
-- `accelerate==1.7.0`
-- `torchcodec==0.2`
-- `peft==0.17.1`
+```bash
+pip install -r requirements.txt
+```
 
 ## Custom Dataset Configuration
 
 The customized data should have the format like:
-
-### JSON Data Structure
-
-**Media Specification**:
-- `image/video`: Contains path to the media file (required)
-- Media tags in prompts:
-    - `<image>` for image understanding tasks
-    - `<video>` for video understanding tasks
-- `conversations`: contains the questions and answers
 
 ### Example Instances:
 
@@ -160,7 +141,7 @@ To add or modify datasets for training, follow these steps:
 
 ### Dataset Definition Structure
 
-1. **Create a dataset dictionary** in the format in the file `data/__init__.py`:
+1. **Create a dataset dictionary** in the format in the file `qwenvl/dataset/__init__.py`:
 ```python
 DATASET_NAME = {
     "annotation_path": "/path/to/annotations.json",
@@ -182,27 +163,6 @@ You can optionally specify sampling rates by appending `%X` to the dataset name:
 - `"dataset_name%50"` will sample 50% of the data
 - `"dataset_name%20"` will sample 20% of the data
 
-### Usage Example
-
-1. Define your dataset:
-```python
-MY_DATASET = {
-    "annotation_path": "/data/my_dataset/annotations.json",
-    "data_path": "/data/my_dataset/images/",
-}
-
-data_dict = {
-    "my_dataset": MY_DATASET,
-    "cambrian_737k": CAMBRIAN_737K,  # existing dataset
-}
-```
-
-2. Use it in training:
-```python
-dataset_names = ["my_dataset%50"]  # Will use 50% of your dataset
-configs = data_list(dataset_names)
-```
-
 ### Notes  
 - The `annotation_path` should point to a JSON or JSONL file containing your dataset annotations.  
 - The `data_path` can be left empty if the image paths in the annotations are absolute.  
@@ -217,92 +177,33 @@ configs = data_list(dataset_names)
 
 ## Usage
 
-To train a model:
+### SFT
+To train the model, make sure to update the `dataset` field in the training script `scripts/sft_2b.sh`:
 
 ```bash
-#!/bin/bash
-# Complete QwenVL Training Launch Script with Full Parameter Documentation
+bash scripts/sft_2b.sh
+```
 
-# ======================
-# Distributed Configuration
-# ======================
-MASTER_ADDR="127.0.0.1"                     # [Required] Master node IP for multi-GPU training
-MASTER_PORT=$(shuf -i 20000-29999 -n 1)     # Random port to avoid conflicts
-NPROC_PER_NODE=$(nvidia-smi --list-gpus | wc -l)  # Automatically detects available GPUs
+### RL
+To train with RL, you first need to define your own reward function in `qwenvl/train/reward_func.py`. An example pseudo reward function is shown below:
 
-# ======================
-# Path Configuration
-# ======================
-MODEL_PATH="/path/to/Qwen2.5-VL-3B-Instruct"  # [ModelArguments] Pretrained model path
-OUTPUT_DIR="./checkpoints"                   # Directory for saving checkpoints
-CACHE_DIR="./cache"                          # [TrainingArguments] Cache directory for models
+```python
+def pseudo_reward(
+    model_output: List[str],    # required
+    ground_truth: List[str],    # required
+    model_input: List[str],     # required
+    **kwargs
+) -> List[float]:
+    """
+    A simple placeholder reward function.
+    """
+    return [1.0 for _ in model_output]  # return a float reward for each output
+```
 
-# ======================
-# Model Configuration
-# ======================
-DATASETS="your_dataset%100"                  # [DataArguments] Dataset with sampling rate
+Then, update the `reward_func` and `reward_func_weight` fields in the training script. Use commas to separate multiple functions **without spaces**. Also make sure to update the `dataset` path accordingly.
 
-# ======================
-# Training Hyperparameters
-# ======================
-torchrun --nproc_per_node=$NPROC_PER_NODE \
-         --master_addr=$MASTER_ADDR \
-         --master_port=$MASTER_PORT \
-         qwenvl/train/train_qwen.py \
-         # Core Arguments
-         --model_name_or_path $MODEL_PATH \  # [ModelArguments] Model identifier
-         --tune_mm_llm True \                # [TrainingArguments] Train LLM or not
-         --tune_mm_vision False \            # [TrainingArguments] Train VIT or not
-         --tune_mm_mlp False \               # [TrainingArguments] Train MLP or not
-         --dataset_use $DATASETS \           # [DataArguments] Dataset specification
-         --output_dir $OUTPUT_DIR \          # Output directory for checkpoints
-         --cache_dir $CACHE_DIR \            # [TrainingArguments] Model cache location
-         
-         # Precision & Memory
-         --bf16 \                            # Use bfloat16 precision (Ampere+ GPUs)
-         --per_device_train_batch_size 4 \   # Batch size per GPU
-         --gradient_accumulation_steps 4 \   # Effective batch size multiplier
-         
-         # Learning Rate Configuration
-         --learning_rate 2e-7 \              # Base learning rate
-         --mm_projector_lr 1e-5 \            # [TrainingArguments] Projector-specific LR
-         --vision_tower_lr 1e-6 \            # [TrainingArguments] Vision encoder LR
-         --optim adamw_torch \               # [TrainingArguments] Optimizer selection
-         
-         # Sequence Configuration
-         --model_max_length 4096 \           # [TrainingArguments] Max sequence length
-         --data_flatten True \               # [DataArguments] Concatenate batch sequences
-         --data_packing True \               # [DataArguments] Using packing data
-         
-         # Image Processing
-         --max_pixels 576\*28\*28 \               # [DataArguments] Max image pixels (H*W) for image
-         --min_pixels 16\*28\*28 \                # [DataArguments] Min image pixels for image
-         # Video Processing
-         --video_fps 2 \                          # [DataArguments] video fps
-         --video_max_frames 8 \                   # [DataArguments] Max frames per video
-         --video_min_frames 4 \                   # [DataArguments] Min frames per video
-         --video_max_pixels 1664\*28\*28 \        # [DataArguments] Max pixels per video
-         --video_min_pixels 256\*28\*28 \         # [DataArguments] Min pixels per video
-         
-         # Training Schedule
-         --num_train_epochs 3 \              # Total training epochs
-         --warmup_ratio 0.03 \               # LR warmup proportion
-         --lr_scheduler_type "cosine" \      # Learning rate schedule
-         --weight_decay 0.01 \               # L2 regularization strength
-         
-         # Logging & Checkpoints
-         --logging_steps 10 \               # Log metrics interval
-         --save_steps 500 \                 # Checkpoint save interval
-         --save_total_limit 3 \             # Max checkpoints to keep
-
-         # Lora Config
-         --lora_enable True \                 # [TrainingArguments] Enable LoRA
-         --lora_r 8 \                         # [TrainingArguments] LoRA r
-         --lora_alpha 16 \                    # [TrainingArguments] LoRA alpha 
-         --lora_dropout 0.0 \                # [TrainingArguments] LoRA dropout
-
-         # Advanced Options
-         --deepspeed zero3.json \           # DeepSpeed configuration
+```bash
+bash scripts/grpo_2b.sh
 ```
 
 The script accepts arguments in three categories:
