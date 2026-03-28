@@ -126,7 +126,7 @@ def print_table(metrics, summary):
 
 @torch.inference_mode()
 def run_eval(args):
-    model_name = args.model_path.split("/")[1]
+    model_name = "-".join(args.model_path.split("/")[1:])
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, f"{model_name}.json")
 
