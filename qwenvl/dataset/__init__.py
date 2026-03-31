@@ -16,6 +16,11 @@ VIDEOREWARD_FIXED = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_REGION = {
+    "annotation_path": "./data/train_region.json",
+    "data_path": "./data",
+}
+
 VIDEOREWARD_EVAL = {
     "annotation_path": "./data/eval_fixed.json",
     "data_path": "./data",
@@ -25,6 +30,7 @@ data_dict = {
     "videoreward": VIDEOREWARD,
     "videoreward_filtered": VIDEOREWARD_FILTERED,
     "videoreward_fixed": VIDEOREWARD_FIXED,
+    "videoreward_region": VIDEOREWARD_REGION,
     "videoreward_eval": VIDEOREWARD_EVAL,
 }
 

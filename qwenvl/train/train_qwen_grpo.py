@@ -116,6 +116,7 @@ def train(attn_implementation="flash_attention_2"):
         peft_config=peft_config,
         reward_funcs=reward_funcs,
         reward_func_weights=reward_func_weights,
+        processing_class=processor,
         **data_module
     )
 

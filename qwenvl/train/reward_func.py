@@ -1,4 +1,5 @@
 import re
+import json
 from typing import List, Tuple, Dict
 
 
@@ -46,11 +47,17 @@ def extract_tag_content(text: str, tag: str) -> str:
     Extract content inside <tag>...</tag>. Return empty string if not found.
     """
     if text is None:
-        return ""
+        return [""]
     pattern = rf"<{tag}>\s*(.*?)\s*</{tag}>"
-    match = re.search(pattern, text, re.S | re.I)
-    return match.group(1).strip() if match else ""
+    matches = re.findall(pattern, text, re.S | re.I)
+    return [match.strip() for match in matches] if matches else [""]
 
+
+def parse_box(box_str: str) -> List[int]:
+    """
+    Parse a box string like "[x1,y1,x2,y2]" into a list of integers [x1, y1, x2, y2].
+    """
+    return json.loads(box_str)
 
 def parse_answer_block(answer_text: str) -> Dict[str, str]:
     """
@@ -85,8 +92,8 @@ def parse_output(text: str) -> Tuple[str, Dict[str, str]]:
     """
     text = "" if text is None else str(text)
 
-    think_content = extract_tag_content(text, "think")
-    answer_text = extract_tag_content(text, "answer")
+    think_content = extract_tag_content(text, "think")[0]
+    answer_text = extract_tag_content(text, "answer")[0]
     answer_dict = parse_answer_block(answer_text)
 
     return think_content, answer_dict
@@ -145,6 +152,32 @@ def format_reward(
     pattern = r"^\s*<think>.*?</think>\s*<answer>.*?</answer>\s*$"
     matches = [re.match(pattern, str(content), re.S | re.I) for content in model_output]
     return [1.0 if match else 0.0 for match in matches]
+
+
+def region_reward(
+    model_output: List[str], 
+    ground_truth: List[str], 
+    model_input: List[str],
+    **kwargs
+) -> List[float]:
+    """
+    region reward
+    """
+    rewards = []
+    for out, gt in zip(model_output, ground_truth):
+        gt_boxes = extract_tag_content(gt, "region")
+        if gt_boxes[0] != "":
+            gt_boxes = [parse_box(box_str) for box_str in gt_boxes]
+            model_output_boxes = extract_tag_content(out, "region")
+            if model_output_boxes[0] != "":
+                model_output_boxes = [parse_box(box_str) for box_str in model_output_boxes]
+                # Here we can compute IoU or any other metric between gt_boxes and model_output_boxes
+                # For simplicity, we just check if they are exactly the same
+                reward = 1.0 if set(tuple(box) for box in gt_boxes) == set(tuple(box) for box in model_output_boxes) else 0.0
+            else:
+                reward = 0.0
+
+    return rewards
 
 
 def pseudo_reward(

@@ -4,10 +4,19 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 model = Qwen3VLForConditionalGeneration.from_pretrained(
     "output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo/checkpoint-697", 
     dtype="auto", 
-    # device_map="auto"
+    device_map="auto"
 )
 
 processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo/checkpoint-697")
+
+# print(processor.tokenizer.additional_special_tokens)
+print(processor.tokenizer.all_special_tokens)
+print("<think>" in processor.tokenizer.all_special_tokens)
+print("</think>" in processor.tokenizer.all_special_tokens)
+print(processor.tokenizer.tokenize("<think>"))
+print(processor.tokenizer.tokenize("</think>"))
+print(processor.tokenizer.tokenize("<answer>"))
+print(processor.tokenizer.tokenize("</answer>"))
 
 messages = [
     {

@@ -25,7 +25,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from qwenvl.train.trainer_sft import replace_qwen2_vl_attention_class
+from qwenvl.train.trainer_sft import replace_qwen3_vl_attention_class
 
 from transformers import (
     Qwen2VLForConditionalGeneration,
@@ -130,8 +130,14 @@ def train(attn_implementation="flash_attention_2"):
         model_args.model_name_or_path,
     )
 
+    num_added = processor.tokenizer.add_tokens(
+        ["<answer>", "</answer>", "<region>", "</region>"]
+    )
+    if num_added > 0:
+        model.resize_token_embeddings(len(processor.tokenizer))
+
     if data_args.data_flatten or data_args.data_packing:
-        replace_qwen2_vl_attention_class()
+        replace_qwen3_vl_attention_class()
     model.config.use_cache = False
 
     if training_args.gradient_checkpointing:
