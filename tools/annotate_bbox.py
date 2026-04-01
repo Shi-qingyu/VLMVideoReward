@@ -1,218 +1,262 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import json
-import base64
-import argparse
-import subprocess
-import tempfile
-import shutil
-import time
-from typing import Any, Dict, List, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import copy
+import random
+import hashlib
+import cv2
+import torch
+import torch.multiprocessing as mp
+import torch.distributed as dist
 
-from openai import AzureOpenAI
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from sam3.model_builder import build_sam3_video_predictor
 
-SYS_QA = (
-    "You are a video understanding assistant. Based on the user's question, "
-    "answer according to the video content and strictly follow the required output format specified by the user."
-)
+template = """This is a judgment of an AI-generated video.
 
-# -------------------------
-# Utils
-# -------------------------
-def ensure_dir(p: str) -> None:
-    if p:
-        os.makedirs(p, exist_ok=True)
+Your task is to extract ONLY the nouns that refer to issues mentioned in the judgment.
 
-def b64_file(path: str) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+IMPORTANT RULES:
+1. The nouns MUST be copied EXACTLY from the original judgment text.
+2. DO NOT rephrase, summarize, or modify the words in any way.
+3. Each extracted noun MUST be a direct substring of the judgment.
+4. If multiple nouns exist, separate them with commas.
 
-def ffprobe_duration(video_path: str) -> float:
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", video_path]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+Judgment: {judgement}
+"""
+
+MODEL_NAME = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+INPUT_JSON = "data/train_fixed.json"
+OUTPUT_DIR = "data/parallel_outputs"
+
+
+def split_data(data, rank, world_size):
+    return data[rank::world_size]
+
+
+def build_models(rank):
+    torch.cuda.set_device(rank)
+    device = f"cuda:{rank}"
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        dtype=torch.bfloat16,
+        device_map={"": device},
+        low_cpu_mem_usage=True,
+    )
+    model.eval()
+
+    video_predictor = build_sam3_video_predictor(
+        gpus_to_use=[rank]
+    )
+    return tokenizer, model, video_predictor, device
+
+
+def get_sample_key(d):
+    if "id" in d:
+        return str(d["id"])
+
+    raw = json.dumps(
+        {
+            "video": d["videos"][0] if d.get("videos") else "",
+            "judgement": d["conversations"][-1]["value"] if d.get("conversations") else "",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def load_done_set(done_path):
+    done = set()
+    if os.path.exists(done_path):
+        with open(done_path, "r", encoding="utf-8") as f:
+            for line in f:
+                key = line.strip()
+                if key:
+                    done.add(key)
+    return done
+
+
+def append_jsonl(jsonl_fp, item):
+    jsonl_fp.write(json.dumps(item, ensure_ascii=False) + "\n")
+    jsonl_fp.flush()
+    os.fsync(jsonl_fp.fileno())
+
+
+def append_done(done_fp, key):
+    done_fp.write(key + "\n")
+    done_fp.flush()
+    os.fsync(done_fp.fileno())
+
+
+def process_one_sample(d, tokenizer, model, video_predictor, device):
+    video_path = os.path.join("data", d["videos"][0])
+    judgement = d["conversations"][-1]["value"]
+
+    start_pos = judgement.find("<think>")
+    end_pos = judgement.find("</think>")
+
+    if start_pos != -1 and end_pos != -1 and end_pos > start_pos:
+        thinking = judgement[start_pos + len("<think>"): end_pos]
+    else:
+        thinking = judgement
+
+    new_thinking = thinking
+
+    prompt = template.format(judgement=thinking)
+    messages = [{"role": "user", "content": prompt}]
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    model_inputs = tokenizer([text], return_tensors="pt").to(device)
+
+    with torch.inference_mode():
+        generated_ids = model.generate(
+            **model_inputs,
+            max_new_tokens=512,
+            do_sample=False,
+        )
+
+    output_ids = generated_ids[0][len(model_inputs.input_ids[0]):]
+    content = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+    del model_inputs, generated_ids, output_ids
+    torch.cuda.empty_cache()
+
+    texts = [x.strip() for x in content.split(",") if x.strip()]
+    texts = list(dict.fromkeys(texts))
+
+    session_id = None
     try:
-        return float(r.stdout.strip())
-    except Exception:
-        return 0.0
+        response = video_predictor.handle_request(
+            request={
+                "type": "start_session",
+                "resource_path": video_path,
+            }
+        )
+        session_id = response.get("session_id")
 
-# -------------------------
-# Frame extraction (single ffmpeg call)
-# -------------------------
-def extract_frames(
-    video_path: str,
-    out_dir: str,
-    max_frames: int = 96,
-    fps: float = 1.0,
-    image_h: int = 480,
-) -> List[str]:
-    """
-    Extract up to max_frames frames using one ffmpeg call.
-    Strategy: sample at fps, but cap to max_frames via -frames:v.
-    """
-    ensure_dir(out_dir)
-    out_pattern = os.path.join(out_dir, "frame_%06d.jpg")
+        cap = cv2.VideoCapture(video_path)
+        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
 
-    cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-i", video_path,
-        "-vf", f"fps={fps},scale=-2:{image_h}",
-        "-vsync", "0",
-        "-q:v", "2",
-        "-frames:v", str(int(max_frames)),
-        "-y", out_pattern,
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        return []
+        if num_frames <= 0:
+            output = copy.deepcopy(d)
+            return output
 
-    files = sorted(
-        os.path.join(out_dir, fn) for fn in os.listdir(out_dir)
-        if fn.lower().endswith(".jpg")
-    )
-    return files[:max_frames]
+        frame_index = random.randint(0, num_frames - 1)
 
-# -------------------------
-# Call GPT with multi-images
-# -------------------------
-def call_qa(
-    client: AzureOpenAI,
-    model: str,
-    frames: List[str],
-    question: str,
-    max_tokens: int = 1024,
-    temperature: float = 0.0,
-) -> Tuple[str, float]:
-    content: List[Dict[str, Any]] = []
+        if session_id:
+            for text_item in texts:
+                response = video_predictor.handle_request(
+                    request={
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": frame_index,
+                        "text": text_item,
+                    }
+                )
 
-    # Optional: a short hint to interpret frames as evidence
-    content.append({"type": "text", "text": "You will be given sampled frames from a video. Use them to answer."})
+                output_data = response.get("outputs")
+                if not output_data:
+                    continue
 
-    for p in frames:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_file(p)}"}})
+                boxes = output_data.get("out_boxes_xywh", [])
+                if len(boxes) == 0:
+                    continue
 
-    content.append({"type": "text", "text": question.strip()})
+                box = list(boxes[0])
+                new_text = f"{text_item} at <region>{box}</region>"
+                if new_text not in new_thinking:
+                    new_thinking = new_thinking.replace(text_item, new_text, 1)
 
-    t0 = time.time()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYS_QA},
-            {"role": "user", "content": content},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-        stream=False,
-    )
-    t1 = time.time()
-    ans = resp.choices[0].message.content or ""
-    return ans, (t1 - t0)
+    finally:
+        if session_id is not None:
+            try:
+                video_predictor.handle_request(
+                    request={
+                        "type": "close_session",
+                        "session_id": session_id,
+                    }
+                )
+            except Exception:
+                pass
 
-# -------------------------
-# Per-sample
-# -------------------------
-def process_one(sample: Dict[str, Any], args, client: AzureOpenAI) -> Dict[str, Any]:
-    out = {
-        "id": sample.get("id", sample.get("question_id", None)),
-        "video_path": sample.get("video_path"),
-        "question": sample.get("question"),
-        "answer": None,
-        "latency_sec": None,
-        "error": None,
-    }
+    output = copy.deepcopy(d)
+    new_judgement = judgement.replace(thinking, new_thinking, 1)
+    output["conversations"][-1]["value"] = new_judgement
+    return output
 
-    try:
-        video_path = sample["video_path"]
-        question = sample["question"]
-        abs_video = video_path if os.path.isabs(video_path) else os.path.join(args.base_video_dir, video_path)
 
-        if not os.path.exists(abs_video):
-            raise FileNotFoundError(f"video not found: {abs_video}")
+def worker(rank, world_size, data):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-        # temp dir per sample (auto cleaned)
-        tmpdir = tempfile.mkdtemp(prefix="gpt_frames_")
-        try:
-            frames = extract_frames(
-                video_path=abs_video,
-                out_dir=tmpdir,
-                max_frames=args.max_frames,
-                fps=args.fps,
-                image_h=args.image_h,
-            )
-            if not frames:
-                raise RuntimeError("ffmpeg frame extraction failed (no frames).")
+    random.seed(1234 + rank)
+    torch.manual_seed(1234 + rank)
 
-            ans, latency = call_qa(
-                client=client,
-                model=args.model_name,
-                frames=frames,
-                question=question,
-                max_tokens=args.max_tokens,
-                temperature=args.temperature,
-            )
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+    tokenizer, model, video_predictor, device = build_models(rank)
 
-        out["answer"] = ans
-        out["latency_sec"] = round(latency, 4)
-        return out
+    shard = split_data(data, rank, world_size)
 
-    except Exception as e:
-        out["error"] = f"{type(e).__name__}: {e}"
-        return out
+    jsonl_path = os.path.join(OUTPUT_DIR, f"train_region_rank{rank}.jsonl")
+    done_path = os.path.join(OUTPUT_DIR, f"train_region_rank{rank}.done")
+    err_path = os.path.join(OUTPUT_DIR, f"train_region_rank{rank}.errors.jsonl")
 
-# -------------------------
-# Main
-# -------------------------
-def main():
-    ap = argparse.ArgumentParser("minimal_video_frame_qa_batch")
+    done_set = load_done_set(done_path)
 
-    ap.add_argument("--input_json", type=str, required=True, help="list of samples: {video_path, question, (optional) id}")
-    ap.add_argument("--base_video_dir", type=str, default=".", help="prefix for relative video_path")
-    ap.add_argument("--output_json", type=str, required=True)
+    with open(jsonl_path, "a", encoding="utf-8") as jsonl_fp, \
+         open(done_path, "a", encoding="utf-8") as done_fp, \
+         open(err_path, "a", encoding="utf-8") as err_fp:
 
-    ap.add_argument("--max_workers", type=int, default=8)
+        with torch.inference_mode():
+            for d in tqdm(shard, desc=f"Rank {rank}", position=rank):
+                sample_key = get_sample_key(d)
 
-    # frame sampling
-    ap.add_argument("--max_frames", type=int, default=96)
-    ap.add_argument("--fps", type=float, default=1.0)
-    ap.add_argument("--image_h", type=int, default=480)
+                if sample_key in done_set:
+                    continue
 
-    # model
-    ap.add_argument("--azure_endpoint", type=str, required=True)
-    ap.add_argument("--azure_api_key", type=str, required=True)
-    ap.add_argument("--azure_api_version", type=str, default="2024-03-01-preview")
-    ap.add_argument("--model_name", type=str, required=True)
+                try:
+                    out = process_one_sample(d, tokenizer, model, video_predictor, device)
+                    append_jsonl(jsonl_fp, out)
+                    append_done(done_fp, sample_key)
+                    done_set.add(sample_key)
+                except Exception as e:
+                    err_item = {
+                        "key": sample_key,
+                        "video": d["videos"][0] if d.get("videos") else None,
+                        "error": str(e),
+                    }
+                    append_jsonl(err_fp, err_item)
 
-    ap.add_argument("--max_tokens", type=int, default=1024)
-    ap.add_argument("--temperature", type=float, default=0.0)
 
-    args = ap.parse_args()
-    ensure_dir(os.path.dirname(args.output_json))
+def merge_results(world_size):
+    merged = []
+    for rank in range(world_size):
+        path = os.path.join(OUTPUT_DIR, f"train_region_rank{rank}.jsonl")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        merged.append(json.loads(line))
 
-    with open(args.input_json, "r", encoding="utf-8") as f:
-        samples = json.load(f)
-    if not isinstance(samples, list):
-        raise ValueError("input_json must be a JSON list.")
+    with open(os.path.join(OUTPUT_DIR, "train_region.json"), "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=4)
 
-    client = AzureOpenAI(
-        azure_endpoint=args.azure_endpoint,
-        api_key=args.azure_api_key,
-        api_version=args.azure_api_version,
-    )
-
-    results: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
-        futs = [ex.submit(process_one, s, args, client) for s in samples]
-        for fut in as_completed(futs):
-            results.append(fut.result())
-
-    with open(args.output_json, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
-    print(f"Saved: {args.output_json}  (n={len(results)})")
 
 if __name__ == "__main__":
-    main()
+    with open(INPUT_JSON, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    worker(local_rank, world_size, data)
+
+    # if local_rank == 0:
+    #     merge_results(world_size)
