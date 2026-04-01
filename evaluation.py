@@ -170,8 +170,9 @@ def run_eval(args):
 
             for i in range(len(preds)):
                 # Extract ground truth text from message list structure
+                video = user_prompts[i][0]["content"][0]["video"]
                 gt_text = gt_prompts[i][0]["content"][0]["text"]
-                item = {"answer": preds[i], "ground_truth": gt_text}
+                item = {"video": video, "answer": preds[i], "ground_truth": gt_text}
                 results.append(item)
 
             # Real-time write to JSON after every batch
