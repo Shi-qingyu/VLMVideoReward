@@ -3,7 +3,7 @@ import argparse
 from huggingface_hub import HfApi
 
 
-# HF_TOKEN = "_xaCaAFWPmlUgIMIwMPtwqjVfaTvTlwuidu"
+HF_TOKEN = 
 REPO_ID = "QingyuShi/videoreward"
 REPO_TYPE = "dataset"  # change to "model" if your repo is a model repo
 
