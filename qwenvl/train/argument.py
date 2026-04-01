@@ -72,6 +72,7 @@ class GRPOArguments(transformers.TrainingArguments):
     # KL penalty
     beta: float = field(default=0.04)
 
+    # Reward function
     reward_func: str = field(default="acc_reward")
     reward_func_weight: str = field(default="1.0")
 
