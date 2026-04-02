@@ -687,7 +687,7 @@ class LazyRLDataset(Dataset):
         dataset = data_args.dataset_use.split(",")
         dataset_list = data_list(dataset)
         rank0_print(f"Loading datasets: {dataset_list}")
-        self.use_cot = getattr(data_args, "use_cot", False)
+        self.using_cot = getattr(data_args, "using_cot", False)
 
         list_data_dict = []
 
@@ -729,7 +729,7 @@ class LazyRLDataset(Dataset):
             cur_i = i if attempt_idx == 0 else random.randint(0, len(self.list_data_dict) - 1)
             try:
                 source = self.list_data_dict[cur_i]
-                messages = _build_messages(source, Path(source.get("data_path", "")), self.use_cot)
+                messages = _build_messages(source, Path(source.get("data_path", "")), self.using_cot)
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
 
