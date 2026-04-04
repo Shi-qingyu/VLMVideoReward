@@ -86,7 +86,7 @@ def iou_reward(
                     # Compute scalar reward from optimally matched box IoUs
                     reward = mean_matched_iou(gt_boxes, model_output_boxes)
 
-                except Exception:
+                except Exception as e:
                     reward = 0.0
             else:
                 reward = 0.0

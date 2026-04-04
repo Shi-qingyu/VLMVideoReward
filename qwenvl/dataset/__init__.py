@@ -6,11 +6,6 @@ VIDEOREWARD = {
     "data_path": "./data",
 }
 
-VIDEOREWARD_FILTERED = {
-    "annotation_path": "./data/train_filtered.json",
-    "data_path": "./data",
-}
-
 VIDEOREWARD_FIXED = {
     "annotation_path": "./data/train_fixed.json",
     "data_path": "./data",
@@ -21,6 +16,11 @@ VIDEOREWARD_REGION = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_ST = {
+    "annotation_path": "./data/train_spatial_temporal.json",
+    "data_path": "./data",
+}
+
 VIDEOREWARD_EVAL = {
     "annotation_path": "./data/eval_fixed.json",
     "data_path": "./data",
@@ -28,9 +28,9 @@ VIDEOREWARD_EVAL = {
 
 data_dict = {
     "videoreward": VIDEOREWARD,
-    "videoreward_filtered": VIDEOREWARD_FILTERED,
     "videoreward_fixed": VIDEOREWARD_FIXED,
     "videoreward_region": VIDEOREWARD_REGION,
+    "videoreward_st": VIDEOREWARD_ST,
     "videoreward_eval": VIDEOREWARD_EVAL,
 }
 
@@ -57,7 +57,4 @@ def data_list(dataset_names):
 
 
 if __name__ == "__main__":
-    dataset_names = ["cambrian_737k"]
-    configs = data_list(dataset_names)
-    for config in configs:
-        print(config)
+    pass

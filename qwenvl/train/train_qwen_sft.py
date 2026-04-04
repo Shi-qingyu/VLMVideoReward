@@ -131,7 +131,7 @@ def train(attn_implementation="flash_attention_2"):
     )
 
     num_added = processor.tokenizer.add_tokens(
-        ["<answer>", "</answer>", "<region>", "</region>"]
+        ["<answer>", "</answer>", "<region>", "</region>", "<timestamp>", "</timestamp>"]
     )
     if num_added > 0:
         model.resize_token_embeddings(len(processor.tokenizer))

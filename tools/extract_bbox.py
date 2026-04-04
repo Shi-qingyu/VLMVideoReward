@@ -205,11 +205,11 @@ def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
 
-    worker(local_rank, world_size, data, args.output_dir)
+    # worker(local_rank, world_size, data, args.output_dir)
 
     # 如果你外面真用 torchrun，可以自己在 rank0 合并
-    # if local_rank == 0:
-    #     merge_results(world_size, args.output_dir)
+    if local_rank == 0:
+        merge_results(world_size, args.output_dir)
 
 
 if __name__ == "__main__":

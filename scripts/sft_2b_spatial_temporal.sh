@@ -21,10 +21,10 @@ grad_accum_steps=4
 entry_file=qwenvl/train/train_qwen_sft.py 
 
 # Dataset configuration (replace with public dataset names)
-datasets=videoreward_region
+datasets=videoreward_st
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-region-full"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-st"
 output_dir=./output/${run_name}
 
 # Training arguments
