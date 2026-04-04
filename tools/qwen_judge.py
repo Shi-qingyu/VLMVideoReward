@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import argparse
+import hashlib
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
@@ -14,8 +16,14 @@ Based on the above criteria, assign a consistency score ranging from 0 to 1, whe
 """
 
 
+SCORE_PATTERN = re.compile(
+    r"Consistency\s*Score\s*[:：]?\s*\**\s*([01](?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Qwen Judge with vLLM + torchrun")
+    parser = argparse.ArgumentParser(description="Qwen Judge with pure vLLM tensor parallelism")
     parser.add_argument(
         "--model_name_or_path",
         type=str,
@@ -46,6 +54,16 @@ def parse_args():
         type=int,
         default=32,
     )
+    parser.add_argument(
+        "--tensor_parallel_size",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--max_model_len",
+        type=int,
+        default=8192,
+    )
     return parser.parse_args()
 
 
@@ -54,79 +72,114 @@ def batched(lst, batch_size):
         yield lst[i:i + batch_size]
 
 
-def split_data(data, rank, world_size):
-    return data[rank::world_size]
+def get_sample_key(item):
+    raw = json.dumps(
+        {
+            "answer": item.get("answer", ""),
+            "ground_truth": item.get("ground_truth", ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def get_rank_info():
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    rank = int(os.environ.get("RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    return local_rank, rank, world_size
+def extract_consistency_score(judgment: str):
+    if not judgment:
+        return None
+
+    match = SCORE_PATTERN.search(judgment)
+    if not match:
+        return None
+
+    try:
+        score = float(match.group(1))
+    except ValueError:
+        return None
+
+    if 0.0 <= score <= 1.0:
+        return score
+    return None
 
 
-def build_output_paths(args, rank):
-    if args.output_file is None:
-        base_name = os.path.basename(args.input_file)
-        name, ext = os.path.splitext(base_name)
-        rank_output = os.path.join(
-            os.path.dirname(args.input_file),
-            f"{name}_judgment_rank{rank}{ext}",
-        )
-        final_output = os.path.join(
-            os.path.dirname(args.input_file),
-            f"{name}_judgment{ext}",
-        )
-    else:
-        base, ext = os.path.splitext(args.output_file)
-        rank_output = f"{base}_rank{rank}{ext}"
-        final_output = args.output_file
+def calculate_consistency_score(judgments):
+    overall_score = 0.0
+    valid_scores = 0
 
-    return rank_output, final_output
+    for item in judgments:
+        judgment = item.get("judgment", "")
+        score = extract_consistency_score(judgment)
+        if score is not None:
+            overall_score += score
+            valid_scores += 1
+
+    if valid_scores > 0:
+        return overall_score / valid_scores
+    return None
 
 
-def merge_outputs(args, world_size):
-    merged = []
+def load_existing_results(output_file):
+    if not os.path.exists(output_file):
+        return [], set()
 
-    if args.output_file is None:
-        base_name = os.path.basename(args.input_file)
-        name, ext = os.path.splitext(base_name)
-        final_output = os.path.join(
-            os.path.dirname(args.input_file),
-            f"{name}_judgment{ext}",
-        )
-    else:
-        final_output = args.output_file
+    with open(output_file, "r", encoding="utf-8") as f:
+        existing_results = json.load(f)
 
-    for rank in range(world_size):
-        rank_output, _ = build_output_paths(args, rank)
-        if os.path.exists(rank_output):
-            with open(rank_output, "r", encoding="utf-8") as f:
-                merged.extend(json.load(f))
+    done_keys = set()
+    for item in existing_results:
+        key = get_sample_key(item)
+        done_keys.add(key)
 
-    with open(final_output, "w", encoding="utf-8") as f:
-        json.dump(merged, f, indent=4, ensure_ascii=False)
+    return existing_results, done_keys
+
+
+def atomic_save_json(data, output_file):
+    tmp_file = output_file + ".tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    os.replace(tmp_file, output_file)
 
 
 def main():
     args = parse_args()
-    local_rank, rank, world_size = get_rank_info()
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
 
     with open(args.input_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    shard = split_data(data, rank, world_size)
-    rank_output, _ = build_output_paths(args, rank)
+    if args.output_file is None:
+        base_name = os.path.basename(args.input_file)
+        name, ext = os.path.splitext(base_name)
+        args.output_file = os.path.join(
+            os.path.dirname(args.input_file),
+            f"{name}_judgment{ext}",
+        )
+
+    existing_results, done_keys = load_existing_results(args.output_file)
+
+    pending_data = []
+    for item in data:
+        key = get_sample_key(item)
+        if key not in done_keys:
+            pending_data.append(item)
+
+    if not pending_data:
+        score = calculate_consistency_score(existing_results)
+        print(f"all samples already processed, consistency score: {score}")
+        return
+
+    print(
+        f"resume enabled: total={len(data)}, done={len(existing_results)}, "
+        f"pending={len(pending_data)}"
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
 
     llm = LLM(
         model=args.model_name_or_path,
-        tensor_parallel_size=1,
+        tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         trust_remote_code=True,
+        max_model_len=args.max_model_len,
     )
 
     sampling_params = SamplingParams(
@@ -134,13 +187,13 @@ def main():
         max_tokens=args.max_new_tokens,
     )
 
-    results = []
-    total_batches = (len(shard) + args.batch_size - 1) // args.batch_size
+    results = list(existing_results)
+    total_batches = (len(pending_data) + args.batch_size - 1) // args.batch_size
 
     for batch in tqdm(
-        batched(shard, args.batch_size),
+        batched(pending_data, args.batch_size),
         total=total_batches,
-        desc=f"rank {rank}",
+        desc="judge",
     ):
         prompts = []
         batch_items = []
@@ -153,6 +206,7 @@ def main():
                 answer=answer,
                 ground_truth=ground_truth,
             )
+
             messages = [{"role": "user", "content": input_text}]
             text = tokenizer.apply_chat_template(
                 messages,
@@ -167,14 +221,18 @@ def main():
 
         for item, output in zip(batch_items, outputs):
             judgment = output.outputs[0].text.strip()
-            results.append({
-                "answer": item["answer"],
-                "ground_truth": item["ground_truth"],
-                "judgment": judgment,
-            })
+            results.append(
+                {
+                    "answer": item["answer"],
+                    "ground_truth": item["ground_truth"],
+                    "judgment": judgment,
+                }
+            )
 
-        with open(rank_output, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=4, ensure_ascii=False)
+        atomic_save_json(results, args.output_file)
+
+    score = calculate_consistency_score(results)
+    print(f"consistency score: {score}")
 
 
 if __name__ == "__main__":

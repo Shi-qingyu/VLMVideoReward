@@ -121,17 +121,29 @@ def main():
     with open(args.input_file, 'r') as f:
         data = json.load(f)
 
+    outputs = []
     for path, item in tqdm(zip(paths, data), total=len(data)):
+        output = {}
         video_path = os.path.join(ROOT, path["videos"][0])
         box_str = extract_tag_content(item['answer'], "region")
+
+        answer = item["answer"]
+        ground_truth = item["ground_truth"]
+        output["video_path"] = video_path
+        output["answer"] = answer
+        output["ground_truth"] = ground_truth
 
         if box_str[0] != "":
             bboxes = []
             for box in box_str:
                 bboxes.append(parse_box(box))
-            output_path = draw_bboxes_on_video(video_path, bboxes, output_path=os.path.join(SAVE_ROOT, os.path.basename(video_path)))
-            print(f"Saved boxed video to: {output_path}")
+            # output_path = draw_bboxes_on_video(video_path, bboxes, output_path=os.path.join(SAVE_ROOT, os.path.basename(video_path)))
+            # print(f"Saved boxed video to: {output_path}")
 
+        outputs.append(output)
+    
+    with open("data/case.json", "w") as f:
+        json.dump(outputs, f, indent=4)
 
 if __name__ == "__main__":
     main()
