@@ -2,21 +2,12 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 # default: Load the model on the available device(s)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo/checkpoint-697", 
+    "output/qwen3vl-2b-baseline-1e-bs4-ga4-st", 
     dtype="auto", 
     device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-fixed-grpo/checkpoint-697")
-
-# print(processor.tokenizer.additional_special_tokens)
-print(processor.tokenizer.all_special_tokens)
-print("<think>" in processor.tokenizer.all_special_tokens)
-print("</think>" in processor.tokenizer.all_special_tokens)
-print(processor.tokenizer.tokenize("<think>"))
-print(processor.tokenizer.tokenize("</think>"))
-print(processor.tokenizer.tokenize("<answer>"))
-print(processor.tokenizer.tokenize("</answer>"))
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-st")
 
 messages = [
     {
@@ -46,7 +37,7 @@ inputs = processor.apply_chat_template(
 inputs = inputs.to(model.device)
 
 # Inference: Generation of the output
-generated_ids = model.generate(**inputs, max_new_tokens=128)
+generated_ids = model.generate(**inputs, max_new_tokens=1024)
 generated_ids_trimmed = [
     out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
 ]

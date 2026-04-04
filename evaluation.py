@@ -27,7 +27,7 @@ def get_args():
     parser.add_argument("--dataset_use", type=str, default="videoreward_eval")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
-    parser.add_argument("--use_cot", action="store_true", default=True, help="Use COT for evaluation")
+    parser.add_argument("--using_cot", action="store_true", default=True, help="Use COT for evaluation")
     parser.add_argument("--output_dir", type=str, default="eval_results")
     return parser.parse_args()
 
@@ -92,7 +92,6 @@ def calculate_metrics(outputs):
         f1 = safe_div(2 * prec * rec, prec + rec)
         metrics[key] = {**s, "accuracy": acc, "precision": prec, "recall": rec, "f1": f1}
     
-    print(metrics)
     all_fields = ["tp", "tn", "fp", "fn", "correct", "total", "gt_yes", "gt_no"]
     summary = {f: sum(metrics[k].get(f, 0) for k in EXPECTED_KEYS) for f in all_fields}
     summary["accuracy"] = safe_div(summary["correct"], summary["total"])
