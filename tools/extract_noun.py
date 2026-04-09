@@ -7,18 +7,7 @@ from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
 
-template = """This is a judgment of an AI-generated video.
-
-Your task is to extract ONLY the nouns that refer to issues mentioned in the judgment.
-
-IMPORTANT RULES:
-1. The nouns MUST be copied EXACTLY from the original judgment text.
-2. DO NOT rephrase, summarize, or modify the words in any way.
-3. Each extracted noun MUST be a direct substring of the judgment.
-4. If multiple nouns exist, separate them with commas.
-
-Judgment: {judgement}
-"""
+template = "Based on the following judgment of an AI-generated video, identify and extract the specific anomalous subjects or objects. Use the exact words found in the judgment. Judgment: {judgement}. Please only return the subjects or objects sperated by comma."
 
 
 def parse_args():

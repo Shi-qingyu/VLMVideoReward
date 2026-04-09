@@ -92,7 +92,11 @@ def iou_reward(
                 reward = 0.0
         else:
             if extract_tag_content(out, "region")[0] != "":
-                reward = 0.0
+                num_bbox = len(extract_tag_content(out, "region"))
+                if num_bbox == 1:
+                    reward = 0.5
+                else:
+                    reward = 0.0
             else:
                 reward = 1.0
 

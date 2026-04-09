@@ -95,8 +95,7 @@ def process_one_sample(d, video_predictor):
             output = copy.deepcopy(raw_sample)
             return output
 
-        frame_index = random.randint(0, num_frames - 1)
-        timestamp = frame_index / num_frames
+        frame_index = 0
 
         if session_id:
             for text_item in texts:
@@ -120,7 +119,7 @@ def process_one_sample(d, video_predictor):
                 box = list(boxes[0])
                 box = [int(b * 1000) for b in box]
                 box = xywh_to_xyxy(box)
-                new_text = f"{text_item} at <timestamp>{timestamp:.1f}</timestamp><region>{box}</region>"
+                new_text = f"{text_item} at <region>{box}</region>"
                 if new_text not in new_thinking:
                     new_thinking = new_thinking.replace(text_item, new_text, 1)
 
@@ -205,11 +204,11 @@ def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
 
-    # worker(local_rank, world_size, data, args.output_dir)
+    worker(local_rank, world_size, data, args.output_dir)
 
     # 如果你外面真用 torchrun，可以自己在 rank0 合并
-    if local_rank == 0:
-        merge_results(world_size, args.output_dir)
+    # if local_rank == 0:
+    #     merge_results(world_size, args.output_dir)
 
 
 if __name__ == "__main__":

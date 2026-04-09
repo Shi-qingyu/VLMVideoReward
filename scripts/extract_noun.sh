@@ -3,5 +3,5 @@ python tools/extract_noun.py \
   --input_json data/train_fixed.json \
   --output_json data/train_nouns.json \
   --batch_size 64 \
-  --gpu_memory_utilization 0.85 \
+  --gpu_memory_utilization 0.75 \
   --tensor_parallel_size 8

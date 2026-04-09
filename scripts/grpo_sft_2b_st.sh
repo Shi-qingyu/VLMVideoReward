@@ -10,11 +10,11 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 deepspeed=./scripts/zero3.json
 
 # Model configuration
-llm=output/qwen3vl-2b-baseline-1e-bs4-ga4-region  # Using HuggingFace model ID
+llm=output/qwen3vl-2b-baseline-1e-bs4-ga4-st  # Using HuggingFace model ID
 
 # Reward func configuration
 reward_func=acc_reward,format_reward,iou_reward
-reward_func_weight=1.0,0.2,0.2
+reward_func_weight=1.0,0.2,1.0
 
 # Training hyperparameters
 lr=2e-6
@@ -33,7 +33,7 @@ entry_file=qwenvl/train/train_qwen_grpo.py
 datasets=videoreward_region
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-region-grpo"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-st-grpo"
 output_dir=./output/${run_name}
 
 # Training arguments
