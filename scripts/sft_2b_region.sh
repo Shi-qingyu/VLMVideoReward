@@ -24,7 +24,7 @@ entry_file=qwenvl/train/train_qwen_sft.py
 datasets=videoreward_region
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-region-full"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-region"
 output_dir=./output/${run_name}
 
 # Training arguments

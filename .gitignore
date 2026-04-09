@@ -1,6 +1,7 @@
 *.pyc
 *.json
 occ_gpu*
+.vscode
 
 output
 wandb

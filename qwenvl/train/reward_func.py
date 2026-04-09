@@ -29,17 +29,7 @@ def acc_reward(
             if pred_val == gt_val:
                 cnt += 1
 
-        if cnt == 7:
-            reward = 1.0
-        elif cnt == 6:
-            reward = 0.8
-        elif cnt == 5:
-            reward = 0.6
-        elif cnt == 4:
-            reward = 0.4
-        else:
-            reward = 0
-
+        reward = cnt / len(EXPECTED_KEYS)
         ret.append(reward)
 
     return ret
@@ -91,14 +81,7 @@ def iou_reward(
             else:
                 reward = 0.0
         else:
-            if extract_tag_content(out, "region")[0] != "":
-                num_bbox = len(extract_tag_content(out, "region"))
-                if num_bbox == 1:
-                    reward = 0.5
-                else:
-                    reward = 0.0
-            else:
-                reward = 1.0
+            reward = 1.0
 
         rewards.append(reward)
 
