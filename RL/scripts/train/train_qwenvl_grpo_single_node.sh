@@ -9,9 +9,9 @@ export HYDRA_FULL_ERROR=1
 export WANDB_MODE=${WANDB_MODE:-offline}
 
 PRETRAINED_PATH=${PRETRAINED_PATH:-"Qwen/Qwen2.5-VL-3B-Instruct"}
-TRAIN_FILES=${TRAIN_FILES:-"annodata/RL/train.json"}
+TRAIN_FILES=${TRAIN_FILES:-"../data/train_region.json"}
 VAL_FILES=${VAL_FILES:-"None"}
-MEDIA_ROOT=${MEDIA_ROOT:-""}
+MEDIA_ROOT=${MEDIA_ROOT:-"../data"}
 RUN_NAME=${RUN_NAME:-"qwenvl-grpo-verl"}
 CKPT_SAVE_DIR=${CKPT_SAVE_DIR:-"./checkpoints/${RUN_NAME}"}
 LOG_SAVE_DIR=${LOG_SAVE_DIR:-"./log/${RUN_NAME}/$(date +"%Y%m%d-%H%M%S")"}
