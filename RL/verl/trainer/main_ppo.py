@@ -16,33 +16,6 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 """
 from verl.trainer.constants import SYSTEM_PROMPT_MAP
 
-
-def _patch_transformers_aimv2_duplicate_register():
-    """Ignore duplicate aimv2 config registration when vLLM imports old Ovis config hooks."""
-    try:
-        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
-    except Exception:
-        return
-
-    if getattr(CONFIG_MAPPING.register, "_verl_aimv2_patched", False):
-        return
-
-    original_register = CONFIG_MAPPING.register
-
-    def safe_register(key, value, exist_ok=False):
-        try:
-            return original_register(key, value, exist_ok=exist_ok)
-        except ValueError as exc:
-            if key == "aimv2" and "already used by a Transformers config" in str(exc):
-                return None
-            raise
-
-    safe_register._verl_aimv2_patched = True
-    CONFIG_MAPPING.register = safe_register
-
-
-_patch_transformers_aimv2_duplicate_register()
-
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 import ray
