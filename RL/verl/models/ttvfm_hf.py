@@ -31,7 +31,15 @@ from torch.nn import CrossEntropyLoss, LayerNorm
 
 from transformers import AutoModelForCausalLM, Qwen2ForCausalLM, Qwen2Model
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+try:
+    from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+except ImportError:
+    from transformers.cache_utils import Cache, DynamicCache, StaticCache
+
+    # transformers>=5 may remove SlidingWindowCache from the public cache_utils exports.
+    # This file only relies on it for isinstance checks, so falling back to StaticCache
+    # preserves importability for environments that don't expose the old class.
+    SlidingWindowCache = StaticCache
 from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
