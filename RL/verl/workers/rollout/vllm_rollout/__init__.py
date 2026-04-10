@@ -25,6 +25,31 @@ def get_version(pkg):
 package_name = 'vllm'
 package_version = get_version(package_name)
 
+
+def _patch_transformers_aimv2_duplicate_register():
+    try:
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    except Exception:
+        return
+
+    register_fn = CONFIG_MAPPING.register
+    if getattr(register_fn, "_verl_aimv2_patched", False):
+        return
+
+    def safe_register(key, value, exist_ok=False):
+        try:
+            return register_fn(key, value, exist_ok=exist_ok)
+        except ValueError as exc:
+            if key == "aimv2" and "already used by a Transformers config" in str(exc):
+                return None
+            raise
+
+    safe_register._verl_aimv2_patched = True
+    CONFIG_MAPPING.register = safe_register
+
+
+_patch_transformers_aimv2_duplicate_register()
+
 if package_version <= '0.6.3':
     vllm_mode = 'customized'
     from .vllm_rollout import vLLMRollout
