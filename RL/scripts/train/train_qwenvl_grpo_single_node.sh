@@ -8,7 +8,7 @@ export DATA_MODE=video
 export HYDRA_FULL_ERROR=1
 export WANDB_MODE=${WANDB_MODE:-offline}
 
-PRETRAINED_PATH=${PRETRAINED_PATH:-"Qwen/Qwen2.5-VL-3B-Instruct"}
+PRETRAINED_PATH=${PRETRAINED_PATH:-"../output/qwen3vl-2b-baseline-1e-bs4-ga4-region"}
 TRAIN_FILES=${TRAIN_FILES:-"../data/train_region.json"}
 VAL_FILES=${VAL_FILES:-"None"}
 MEDIA_ROOT=${MEDIA_ROOT:-"../data"}
@@ -32,7 +32,7 @@ python3 -m verl.trainer.main_ppo \
     data.data_source=qwenvl_video_judge \
     data.acc_reward_weight=${ACC_REWARD_WEIGHT:-1.0} \
     data.format_reward_weight=${FORMAT_REWARD_WEIGHT:-0.2} \
-    data.iou_reward_weight=${IOU_REWARD_WEIGHT:-0.0} \
+    data.iou_reward_weight=${IOU_REWARD_WEIGHT:-1.0} \
     reward_model.reward_manager=naive_multithreads \
     actor_rollout_ref.model.path="${PRETRAINED_PATH}" \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -57,7 +57,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.top_p=${TOP_P:-0.95} \
     actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_MEMORY_UTILIZATION:-0.75} \
     actor_rollout_ref.rollout.max_num_batched_tokens=${MAX_BATCHED_TOKENS:-24576} \
-    'actor_rollout_ref.rollout.limit_mm_per_prompt={\"video\": 1}' \
+    actor_rollout_ref.rollout.limit_mm_per_prompt={video:1} \
     trainer.project_name=${PROJECT_NAME:-VLMVideoReward} \
     trainer.experiment_name="${RUN_NAME}" \
     trainer.logger="['console','wandb']" \
