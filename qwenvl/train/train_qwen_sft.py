@@ -41,6 +41,43 @@ from qwenvl.train.argument import (
 )
 from transformers import AutoProcessor, Trainer
 
+import contextlib
+from packaging import version
+import numpy as np
+
+def _rng_safe_globals_context():
+    # PyTorch < 2.6 doesn't need this
+    if version.parse(torch.__version__).release < version.parse("2.6").release:
+        return contextlib.nullcontext()
+
+    np_core = np._core if version.parse(np.__version__) >= version.parse("2.0.0") else np.core
+
+    allowlist = [
+        np_core.multiarray._reconstruct,
+        np.ndarray,
+        np.dtype,
+    ]
+
+    # PyTorch docs note dtype classes may also need allowlisting depending on NumPy version
+    try:
+        if version.parse(np.__version__) < version.parse("1.25"):
+            allowlist.append(type(np.dtype(np.uint32)))
+        else:
+            allowlist.append(np.dtypes.UInt32DType)
+    except Exception:
+        pass
+
+    return torch.serialization.safe_globals(allowlist)
+
+
+_old_load_rng_state = Trainer._load_rng_state
+
+def _patched_load_rng_state(self, checkpoint):
+    with _rng_safe_globals_context():
+        return _old_load_rng_state(self, checkpoint)
+
+Trainer._load_rng_state = _patched_load_rng_state
+
 local_rank = None
 
 

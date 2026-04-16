@@ -24,7 +24,7 @@ entry_file=qwenvl/train/train_qwen_sft.py
 datasets=videoreward_st
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-st"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-st-new"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -66,6 +66,9 @@ torchrun --nproc_per_node=${NPROC_PER_NODE} \
          --master_addr=${MASTER_ADDR} \
          --master_port=${MASTER_PORT} \
          ${entry_file} ${args}
+
+
+python evaluation.py --model_path output/qwen3vl-2b-baseline-1e-bs4-ga4-st-new
 
 
 cd /mnt/bn/xiangtai-training-data-video/scripts

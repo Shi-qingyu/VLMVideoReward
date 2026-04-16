@@ -1,13 +1,13 @@
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 # default: Load the model on the available device(s)
-model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "output/qwen3vl-2b-baseline-1e-bs4-ga4-st-grpo/checkpoint-500", 
+model = AutoModelForImageTextToText.from_pretrained(
+    "output/qwen3vl-2b-baseline-1e-bs4-ga4-region/checkpoint-697", 
     dtype="auto", 
     device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-st-grpo/checkpoint-500")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-region/checkpoint-697")
 
 messages = [
     {
@@ -19,7 +19,7 @@ messages = [
             },
             {
                 "type": "text", 
-                "text": "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\nPlease watch the frames of a given video.\nEvaluate the video according to the following three dimensions.\n\n[Visual Quality]\nAssess the video in terms of:\nVideo Quality: whether the video is free from major visual defects, including blur, lack of detail, poor texture, lighting issues, color distortion, flickering, and overexposure.\n\n[Motion & Physical Consistency]\nAssess the video in terms of:\nSubject Movement: whether the subject's motion is natural, smooth, and physically realistic.\nPhysical Interaction: whether interactions among subjects and/or objects are physically plausible.\nCause-Effect: whether causal relationships are correctly depicted.\n\n[Prompt Alignment]\nTextual prompt: A confident young Latino man with a modern fade hairstyle stands alone in an urban outdoor setting. He wears a trendy oversized hoodie, tapered cargo pants, and high-top sneakers. He looks directly at the camera, maintaining steady eye contact as he speaks, his facial expressions showing subtle anticipation. The background features colorful street murals, graffiti art, and ambient city lights, highlighting the vibrant city atmosphere. The camera remains steady, capturing his bold street style and the dynamic urban environment..\nAssess whether the video is well-aligned with the textual prompt in terms of:\nSubject Existence: whether the subject described in the prompt appears and is accurate.\nObject Existence: whether the object described in the prompt appears and is accurate.\nSubject-Object Interaction: whether the interaction described in the prompt is correctly represented.\n\nProvide your reasoning, then output \"Yes\" or \"No\"."
+                "text": "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\nPlease watch the frames of a given video.\nEvaluate the video according to the following three dimensions.\n\n[Visual Quality]\nAssess the video in terms of:\nVideo Quality: whether the video is free from major visual defects, including blur, lack of detail, poor texture, lighting issues, color distortion, flickering, and overexposure.\n\n[Motion & Physical Consistency]\nAssess the video in terms of:\nSubject Movement: whether the subject's motion is natural, smooth, and physically realistic.\nPhysical Interaction: whether interactions among subjects and/or objects are physically plausible.\nCause-Effect: whether causal relationships are correctly depicted.\n\n[Prompt Alignment]\nTextual prompt: A Black man in a short-sleeve shirt stands at a kitchen stove. He holds a box of dry pasta in one hand and pours the pasta into a pot of boiling water. Using a wooden spoon, he gently presses the pasta down to ensure it is fully submerged. The background shows kitchen counters and utensils. The camera remains steady, focusing on the man’s hands and the pot..\nAssess whether the video is well-aligned with the textual prompt in terms of:\nSubject Existence: whether the subject described in the prompt appears and is accurate.\nObject Existence: whether the object described in the prompt appears and is accurate.\nSubject-Object Interaction: whether the interaction described in the prompt is correctly represented.\n\nProvide your reasoning, then output \"Yes\" or \"No\"."
             },
         ],
     }

@@ -70,10 +70,6 @@ def format_bboxes(file_path):
                 new_ground_truth = new_ground_truth.replace(box, box_list)
             new_example["conversations"][-1]["value"] = new_ground_truth
             new_examples.append(new_example)
-            
-        # cnt += 1
-        # if cnt == 10:
-        #     break
         
     
     with open("data/train_region_new.json", "w") as file:

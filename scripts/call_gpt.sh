@@ -1,0 +1,12 @@
+python tools/call_gpt5.py \
+  --data_file data/train_nouns.json \
+  --base_video_dir data \
+  --output_file annotated_results_gpt5.json \
+  --azure_endpoint https://gpt-i18n.byteintl.net/gpt/openapi/online/multimodal/crawl \
+  --azure_api_key 5iyrOGLAr5Xscz6WqS3Zv8ePc5as5cKL \
+  --model_name gpt-5-2025-08-07 \
+  --max_workers 32 \
+  --fps 2.0 \
+  --max_frames 96 \
+  --image_h 480 \
+  --max_tokens 4096

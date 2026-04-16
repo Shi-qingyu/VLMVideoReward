@@ -141,6 +141,7 @@ def run_eval(args):
                 results = []
         metrics, summary = calculate_metrics(results)
         print_table(metrics, summary)
+        return
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(args.model_path, torch_dtype="auto", device_map="auto")
     processor = AutoProcessor.from_pretrained(args.model_path)
