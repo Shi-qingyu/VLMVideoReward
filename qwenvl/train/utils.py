@@ -121,24 +121,20 @@ def mean_matched_iou(gt_boxes, pred_boxes):
 
 
 def parse_answer_block(answer_text: str) -> Dict[str, str]:
-    """
-    Parse the content inside <answer>...</answer> into a fixed dict.
-    Missing keys are filled with 'Fail'.
-    """
+    answer_text = "" if answer_text is None else str(answer_text)
     answer_dict = {}
 
+    escaped_keys = [re.escape(k) for k in EXPECTED_KEYS]
+    key_union = "|".join(escaped_keys)
+
     for key in EXPECTED_KEYS:
-        # Match one line like:
-        # Video Quality: Yes
-        # Cause-Effect : No
-        #
-        # Capture until end-of-line
-        pattern = rf"(?:^|\n)\s*{re.escape(key)}\s*:\s*([^\n]+)"
-        match = re.search(pattern, answer_text, re.I)
+        pattern = rf"{re.escape(key)}\s*:\s*(.*?)\s*(?=(?:{key_union})\s*:|</answer>|$)"
+        match = re.search(pattern, answer_text, re.I | re.S)
         if match:
             value = match.group(1).strip()
+            value = re.sub(r"</answer>\s*$", "", value, flags=re.I).strip()
             value = value.rstrip(".").strip()
-            answer_dict[key] = value
+            answer_dict[key] = value if value else "Fail"
         else:
             answer_dict[key] = "Fail"
 
@@ -158,3 +154,16 @@ def parse_output(text: str) -> Tuple[str, Dict[str, str]]:
     answer_dict = parse_answer_block(answer_text)
 
     return think_content, answer_dict
+
+
+if __name__ == "__main__":
+    case_singleline = """
+    <think>
+    Some reasoning here.
+    </think>
+    <answer>
+    Video Quality: Yes. Subject Movement: Yes. Physical Interaction: No. Cause-Effect: No. Subject Existence: Yes. Object Existence: Yes. Subject-Object Interaction: No.
+    </answer>
+    """
+
+    print(parse_answer_block(case_singleline))

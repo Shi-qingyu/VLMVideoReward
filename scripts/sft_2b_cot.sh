@@ -21,10 +21,10 @@ grad_accum_steps=4
 entry_file=qwenvl/train/train_qwen_sft.py 
 
 # Dataset configuration (replace with public dataset names)
-datasets=videoreward
+datasets=videoreward_cot
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs16-ga4-lora"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-cot-457"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -33,13 +33,13 @@ args="
     --model_name_or_path "${llm}" \
     --dataset_use ${datasets} \
     --data_flatten True \
+    --tune_mm_vision False \
+    --tune_mm_mlp True \
+    --tune_mm_llm True \
     --using_cot True \
     --bf16 \
     --output_dir ${output_dir} \
     --num_train_epochs 1 \
-    --tune_mm_vision False \
-    --tune_mm_mlp False \
-    --tune_mm_llm True \
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
@@ -47,18 +47,17 @@ args="
     --min_pixels 784 \
     --eval_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 1000 \
+    --save_steps 50 \
     --save_total_limit 1 \
     --learning_rate ${lr} \
     --weight_decay 0 \
     --warmup_ratio 0.03 \
     --max_grad_norm 1 \
-    --lora_enable True \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --model_max_length 8192 \
-    --gradient_checkpointing False \
-    --dataloader_num_workers 4 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 8 \
     --run_name ${run_name} \
     --report_to wandb"
 

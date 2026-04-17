@@ -6,7 +6,8 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "python": "/mnt/bn/xiangtai-training-data/env/miniconda3/envs/sqy-rl/bin/python"
     },
     {
       "name": "Debug Qwen3VL SFT (single GPU lite)",

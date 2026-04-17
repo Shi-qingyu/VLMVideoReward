@@ -2,12 +2,12 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 
 # default: Load the model on the available device(s)
 model = AutoModelForImageTextToText.from_pretrained(
-    "output/qwen3vl-2b-baseline-1e-bs4-ga4-region/checkpoint-697", 
+    "output/qwen3vl-2b-baseline-1e-bs4-ga4-region-457/checkpoint-350", 
     dtype="auto", 
     device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-region/checkpoint-697")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-region-457/checkpoint-350")
 
 messages = [
     {
@@ -32,7 +32,6 @@ inputs = processor.apply_chat_template(
     add_generation_prompt=True,
     return_dict=True,
     return_tensors="pt",
-    fps=2
 )
 inputs = inputs.to(model.device)
 

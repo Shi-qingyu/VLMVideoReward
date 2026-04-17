@@ -2,7 +2,7 @@
 
 # Distributed training configuration
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-"12346"}
+MASTER_PORT=${MASTER_PORT:-"12345"}
 NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
@@ -43,8 +43,11 @@ args="
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
-    --max_pixels 50176 \
-    --min_pixels 784 \
+    --video_fps 2 \
+    --video_max_frames 20 \
+    --video_min_frames 10 \
+    --video_max_pixels 1304576 \
+    --video_min_pixels 200704 \
     --eval_strategy "no" \
     --save_strategy "steps" \
     --save_steps 50 \

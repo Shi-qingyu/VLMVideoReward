@@ -136,7 +136,7 @@ def update_processor_pixels(processor, data_args):
     return processor
 
 
-def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = True) -> List[Dict[str, Any]]:
+def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = True, time_instruction: str = "") -> List[Dict[str, Any]]:
     # Extract and normalize images and videos
     images = item.get("images") or []
     if isinstance(images, str):
@@ -178,6 +178,9 @@ def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = Tru
                         )
                     content.append(video_pool.pop(0))
                 elif seg.strip():
+                    if time_instruction:
+                        seg = f"{time_instruction}\n{seg.strip()}"
+                        time_instruction = ""
                     content.append({"type": "text", "text": seg.strip()})
 
             messages.append({"role": role, "content": content})
@@ -210,8 +213,23 @@ def preprocess_qwen_visual(
 
     source = sources[0]
     base_path = Path(source.get("data_path", ""))
-    messages = _build_messages(source, base_path, using_cot)
 
+    sample_fps = processor.video_processor.fps
+    videos = source.get("videos") or []
+    if isinstance(videos, str):
+        videos = [videos]
+
+    # Build media pools with absolute paths
+    video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
+    video_metadata = processor.video_processor.get_video_metadata(videos=video_pool, return_metadata=True).video_metadata[0]
+    total_frames = int(sample_fps * video_metadata["duration"])
+    duration = video_metadata["duration"]
+    time_instruction = (
+        f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
+        f"from 0 seconds to {duration:.1f} seconds."
+    )
+    
+    messages = _build_messages(source, base_path, using_cot, time_instruction)
     full_result = processor.apply_chat_template(
         messages, tokenize=True, return_dict=True, return_tensors="pt"
     )
@@ -729,7 +747,23 @@ class LazyRLDataset(Dataset):
             cur_i = i if attempt_idx == 0 else random.randint(0, len(self.list_data_dict) - 1)
             try:
                 source = self.list_data_dict[cur_i]
-                messages = _build_messages(source, Path(source.get("data_path", "")), self.using_cot)
+                base_path = Path(source.get("data_path", ""))
+
+                sample_fps = self.processor.video_processor.fps
+                videos = source.get("videos") or []
+                if isinstance(videos, str):
+                    videos = [videos]
+
+                # Build media pools with absolute paths
+                video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
+                video_metadata = self.processor.video_processor.get_video_metadata(videos=video_pool, return_metadata=True).video_metadata[0]
+                total_frames = int(sample_fps * video_metadata["duration"])
+                duration = video_metadata["duration"]
+                time_instruction = (
+                    f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
+                    f"from 0 seconds to {duration:.1f} seconds."
+                )
+                messages = _build_messages(source, Path(source.get("data_path", "")), self.using_cot, time_instruction)
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
 
