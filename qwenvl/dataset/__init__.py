@@ -27,7 +27,7 @@ VIDEOREWARD_ST = {
 }
 
 VIDEOREWARD_EVAL = {
-    "annotation_path": "./data/eval_cot.json",
+    "annotation_path": "./data/eval.json",
     "data_path": "./data",
 }
 

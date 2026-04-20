@@ -215,14 +215,18 @@ def preprocess_qwen_visual(
     base_path = Path(source.get("data_path", ""))
 
     sample_fps = processor.video_processor.fps
+    temporal_patch_size = processor.video_processor.temporal_patch_size
     videos = source.get("videos") or []
     if isinstance(videos, str):
         videos = [videos]
 
     # Build media pools with absolute paths
     video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
-    video_metadata = processor.video_processor.get_video_metadata(videos=video_pool, return_metadata=True).video_metadata[0]
-    total_frames = int(sample_fps * video_metadata["duration"])
+    vp_output = processor.video_processor(videos=video_pool, return_metadata=True)
+    video_metadata = vp_output.video_metadata[0]
+    video_grid_thw = vp_output.video_grid_thw
+    
+    total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
     duration = video_metadata["duration"]
     time_instruction = (
         f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
@@ -445,17 +449,6 @@ class LazySupervisedDataset(Dataset):
 
         data_dict["position_ids"] = position_ids
         data_dict["attention_mask"] = [seq_len]
-
-        text = self.processor.tokenizer.decode(
-            data_dict["input_ids"][0], skip_special_tokens=False
-        )
-
-        labels = data_dict["labels"][0]
-        labels = [
-            tid if tid != -100 else self.processor.tokenizer.pad_token_id
-            for tid in labels
-        ]
-        label = self.processor.tokenizer.decode(labels, skip_special_tokens=False)
 
         return data_dict
 
