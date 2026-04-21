@@ -21,13 +21,13 @@ VIDEOREWARD_COT = {
     "data_path": "./data",
 }
 
-VIDEOREWARD_ST = {
-    "annotation_path": "./data/train_spatial_temporal.json",
+VIDEOREWARD_T = {
+    "annotation_path": "./data/train_t.json",
     "data_path": "./data",
 }
 
 VIDEOREWARD_EVAL = {
-    "annotation_path": "./data/eval.json",
+    "annotation_path": "./data/eval_fixed.json",
     "data_path": "./data",
 }
 
@@ -36,7 +36,7 @@ data_dict = {
     "videoreward_fixed": VIDEOREWARD_FIXED,
     "videoreward_cot": VIDEOREWARD_COT,
     "videoreward_region": VIDEOREWARD_REGION,
-    "videoreward_st": VIDEOREWARD_ST,
+    "videoreward_t": VIDEOREWARD_T,
     "videoreward_eval": VIDEOREWARD_EVAL,
 }
 

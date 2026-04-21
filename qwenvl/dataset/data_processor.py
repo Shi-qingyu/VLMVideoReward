@@ -743,20 +743,24 @@ class LazyRLDataset(Dataset):
                 base_path = Path(source.get("data_path", ""))
 
                 sample_fps = self.processor.video_processor.fps
+                temporal_patch_size = self.processor.video_processor.temporal_patch_size
                 videos = source.get("videos") or []
                 if isinstance(videos, str):
                     videos = [videos]
 
                 # Build media pools with absolute paths
                 video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
-                video_metadata = self.processor.video_processor.get_video_metadata(videos=video_pool, return_metadata=True).video_metadata[0]
-                total_frames = int(sample_fps * video_metadata["duration"])
+                vp_output = self.processor.video_processor(videos=video_pool, return_metadata=True)
+                video_metadata = vp_output.video_metadata[0]
+                video_grid_thw = vp_output.video_grid_thw
+                
+                total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
                 duration = video_metadata["duration"]
                 time_instruction = (
                     f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
                     f"from 0 seconds to {duration:.1f} seconds."
                 )
-                messages = _build_messages(source, Path(source.get("data_path", "")), self.using_cot, time_instruction)
+                messages = _build_messages(source, base_path, self.using_cot, time_instruction)
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
 

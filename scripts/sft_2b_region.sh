@@ -46,8 +46,8 @@ args="
     --video_fps 2 \
     --video_max_frames 20 \
     --video_min_frames 10 \
-    --video_max_pixels 1304576 \
-    --video_min_pixels 200704 \
+    --video_max_pixels 4194304 \
+    --video_min_pixels 1048576 \
     --eval_strategy "no" \
     --save_strategy "steps" \
     --save_steps 50 \

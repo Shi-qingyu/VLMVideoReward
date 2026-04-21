@@ -15,14 +15,6 @@ from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 
 
-EXPECTED_KEYS = [
-    "Video Quality",
-    "Motion Quality",
-    "Physical Interaction Quality",
-    "Entity Existence",
-    "Overall Alignment",
-]
-
 OLD_KEYS = [
     "Video Quality",
     "Subject Movement",
@@ -62,10 +54,6 @@ def normalize_label(text: str) -> str:
     return "fail"
 
 
-def merge_two_yes_no(v1: str, v2: str) -> str:
-    return "yes" if v1 == "yes" and v2 == "yes" else "no"
-
-
 def parse_key_value_pairs(text: str, keys):
     parsed = {}
     for key in keys:
@@ -75,53 +63,12 @@ def parse_key_value_pairs(text: str, keys):
     return parsed
 
 
-def convert_old_7_to_new_5(parsed_old: dict):
-    video_quality = parsed_old.get("Video Quality", "fail")
-    motion_quality = parsed_old.get("Subject Movement", "fail")
-
-    physical_interaction = parsed_old.get("Physical Interaction", "fail")
-    cause_effect = parsed_old.get("Cause-Effect", "fail")
-    physical_interaction_quality = (
-        merge_two_yes_no(physical_interaction, cause_effect)
-        if physical_interaction in ["yes", "no"] and cause_effect in ["yes", "no"]
-        else "fail"
-    )
-
-    subject_existence = parsed_old.get("Subject Existence", "fail")
-    object_existence = parsed_old.get("Object Existence", "fail")
-    entity_existence = (
-        merge_two_yes_no(subject_existence, object_existence)
-        if subject_existence in ["yes", "no"] and object_existence in ["yes", "no"]
-        else "fail"
-    )
-
-    overall_alignment = parsed_old.get("Subject-Object Interaction", "fail")
-
-    return {
-        "Video Quality": video_quality,
-        "Motion Quality": motion_quality,
-        "Physical Interaction Quality": physical_interaction_quality,
-        "Entity Existence": entity_existence,
-        "Overall Alignment": overall_alignment,
-    }
-
-
 def parse_output(text: str):
     answer_match = re.search(r"<answer>\s*(.*?)\s*(?:</answer>|$)", text, re.S)
     body = answer_match.group(1).strip() if answer_match else text.strip()
 
-    # parsed_new = parse_key_value_pairs(body, EXPECTED_KEYS)
-    # new_hit_cnt = sum(v in ["yes", "no"] for v in parsed_new.values())
-    # if new_hit_cnt >= 3:
-    #     return parsed_new
-
     parsed_old = parse_key_value_pairs(body, OLD_KEYS)
     return parsed_old
-    old_hit_cnt = sum(v in ["yes", "no"] for v in parsed_old.values())
-    if old_hit_cnt >= 3:
-        return convert_old_7_to_new_5(parsed_old)
-
-    return {k: "fail" for k in EXPECTED_KEYS}
 
 
 def safe_div(a: float, b: float) -> float:
@@ -129,13 +76,13 @@ def safe_div(a: float, b: float) -> float:
 
 
 def calculate_metrics(outputs):
-    stats = {key: defaultdict(int) for key in EXPECTED_KEYS}
+    stats = {key: defaultdict(int) for key in OLD_KEYS}
 
     for item in outputs:
         pred_dict = parse_output(item["answer"])
         gt_dict = parse_output(item["ground_truth"])
 
-        for key in EXPECTED_KEYS:
+        for key in OLD_KEYS:
             p = pred_dict.get(key, "fail")
             g = gt_dict.get(key, "fail")
 
@@ -164,7 +111,7 @@ def calculate_metrics(outputs):
                     s["fail_pred"] += 1
 
     metrics = {}
-    for key in EXPECTED_KEYS:
+    for key in OLD_KEYS:
         s = stats[key]
         acc = safe_div(s["correct"], s["total"])
         prec = safe_div(s["tp"], s["tp"] + s["fp"])
@@ -179,7 +126,7 @@ def calculate_metrics(outputs):
         }
 
     all_fields = ["tp", "tn", "fp", "fn", "correct", "total", "gt_yes", "gt_no", "fail_pred"]
-    summary = {f: sum(metrics[k].get(f, 0) for k in EXPECTED_KEYS) for f in all_fields}
+    summary = {f: sum(metrics[k].get(f, 0) for k in OLD_KEYS) for f in all_fields}
     summary["accuracy"] = safe_div(summary["correct"], summary["total"])
     summary["precision"] = safe_div(summary["tp"], summary["tp"] + summary["fp"])
     summary["recall"] = safe_div(summary["tp"], summary["tp"] + summary["fn"])
@@ -194,7 +141,7 @@ def calculate_metrics(outputs):
 def print_table(metrics, summary):
     header = ["Dimension", "GT(Y/N)", "TP", "TN", "FP", "FN", "Acc", "Prec", "Rec", "F1"]
     rows = []
-    for k in EXPECTED_KEYS:
+    for k in OLD_KEYS:
         m = metrics[k]
         rows.append([
             k[:28],
@@ -342,13 +289,5 @@ def run_eval(args):
 
 
 if __name__ == "__main__":
-    case_singleline = """
-    <think>
-    Some reasoning here.
-    </think>
-    <answer>\nVideo Quality: Yes. Subject Movement: No. Physical Interaction: No. Cause-Effect: Yes. Subject Existence: Yes. Object Existence: Yes. Subject-Object Interaction: No.\n</answer>
-    """
-
-    print(parse_output(case_singleline))
-    # mp.set_start_method("spawn", force=True)
-    # run_eval(get_args())
+    mp.set_start_method("spawn", force=True)
+    run_eval(get_args())

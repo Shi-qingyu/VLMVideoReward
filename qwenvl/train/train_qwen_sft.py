@@ -168,7 +168,7 @@ def train(attn_implementation="flash_attention_2"):
     )
 
     num_added = processor.tokenizer.add_tokens(
-        ["<answer>", "</answer>", "<region>", "</region>", "<timestamp>", "</timestamp>"]
+        ["<answer>", "</answer>", "<region>", "</region>", "<t>", "</t>"]
     )
     if num_added > 0:
         model.resize_token_embeddings(len(processor.tokenizer))
@@ -186,14 +186,6 @@ def train(attn_implementation="flash_attention_2"):
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=False,
-    )
 
     if training_args.lora_enable:
         from peft import LoraConfig, get_peft_model, TaskType
@@ -216,7 +208,7 @@ def train(attn_implementation="flash_attention_2"):
     
     data_module = make_supervised_data_module(processor, data_args=data_args)
     trainer = Trainer(
-        model=model, processing_class=tokenizer, args=training_args, **data_module
+        model=model, processing_class=processor, args=training_args, **data_module
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):

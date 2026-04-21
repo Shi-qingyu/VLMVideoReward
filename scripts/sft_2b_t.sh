@@ -2,7 +2,7 @@
 
 # Distributed training configuration
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-"12346"}
+MASTER_PORT=${MASTER_PORT:-"12345"}
 NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
@@ -21,10 +21,10 @@ grad_accum_steps=4
 entry_file=qwenvl/train/train_qwen_sft.py 
 
 # Dataset configuration (replace with public dataset names)
-datasets=videoreward_fixed
+datasets=videoreward_t
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-fixed-457"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-t-457"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -50,7 +50,7 @@ args="
     --video_min_pixels 1048576 \
     --eval_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 1000 \
+    --save_steps 50 \
     --save_total_limit 1 \
     --learning_rate ${lr} \
     --weight_decay 0 \
@@ -58,12 +58,11 @@ args="
     --max_grad_norm 1 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 16384 \
+    --model_max_length 8192 \
     --gradient_checkpointing True \
     --dataloader_num_workers 8 \
     --run_name ${run_name} \
-    --report_to wandb
-"
+    --report_to wandb"
 
 # Launch training
 torchrun --nproc_per_node=${NPROC_PER_NODE} \

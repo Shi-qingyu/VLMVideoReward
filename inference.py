@@ -1,13 +1,14 @@
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextToText, AutoProcessor
+
 
 # default: Load the model on the available device(s)
 model = AutoModelForImageTextToText.from_pretrained(
-    "output/qwen3vl-2b-baseline-1e-bs4-ga4-region-457/checkpoint-350", 
+    "output/qwen3vl-2b-baseline-1e-bs4-ga4-t-457/checkpoint-697", 
     dtype="auto", 
     device_map="auto"
 )
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-region-457/checkpoint-350")
+processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-t-457/checkpoint-697")
 
 messages = [
     {
@@ -25,6 +26,26 @@ messages = [
     }
 ]
 
+sample_fps = processor.video_processor.fps
+temporal_patch_size = processor.video_processor.temporal_patch_size
+videos = messages[0]["content"][0].get("video")
+if isinstance(videos, str):
+    videos = [videos]
+
+# Build media pools with absolute paths
+vp_output = processor.video_processor(videos=videos, return_metadata=True)
+video_metadata = vp_output.video_metadata[0]
+video_grid_thw = vp_output.video_grid_thw
+
+total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
+duration = video_metadata["duration"]
+time_instruction = (
+    f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
+    f"from 0 seconds to {duration:.1f} seconds."
+)
+original_text = messages[0]["content"][1]["text"]
+messages[0]["content"][1]["text"] = f"{time_instruction}\n{original_text}"
+
 # Preparation for inference
 inputs = processor.apply_chat_template(
     messages,
@@ -33,6 +54,19 @@ inputs = processor.apply_chat_template(
     return_dict=True,
     return_tensors="pt",
 )
+
+# text = processor.apply_chat_template(
+#     messages, tokenize=False, add_generation_prompt=True
+# )
+# image_inputs, video_inputs = process_vision_info(messages)
+# inputs = processor(
+#     text=[text],
+#     images=image_inputs,
+#     videos=video_inputs,
+#     padding=True,
+#     return_tensors="pt",
+# )
+
 inputs = inputs.to(model.device)
 
 # Inference: Generation of the output
