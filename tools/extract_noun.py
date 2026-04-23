@@ -7,7 +7,7 @@ from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
 
-template = "Based on the following judgment of an AI-generated video, identify and extract the specific anomalous subjects or objects. Use the exact words found in the judgment. Judgment: {judgement}. Please only return the subjects or objects sperated by comma."
+template = "From the following judgment, extract main visible anomalous objects. Choose the most salient concrete, visually identifiable noun or noun phrase mentioned in the judgment, using the exact words from the judgment. Ignore attributes, actions, abstract concepts, evaluations, and nationality/ethnicity descriptions. Judgment: {judgement}. Return objects seperated by comma."
 
 
 def parse_args():
@@ -54,6 +54,14 @@ def extract_thinking(judgement: str) -> str:
     return judgement
 
 
+def extract_answering(judgement: str) -> str:
+    start_pos = judgement.find("<answer>")
+    end_pos = judgement.find("</answer>")
+    if start_pos != -1 and end_pos != -1 and end_pos > start_pos:
+        return judgement[start_pos + len("<answer>"): end_pos]
+    return judgement
+
+
 def normalize_nouns(content: str):
     texts = [x.strip() for x in content.split(",") if x.strip()]
     texts = list(dict.fromkeys(texts))
@@ -89,6 +97,27 @@ def main():
         for d in batch:
             judgement = d["conversations"][-1]["value"]
             thinking = extract_thinking(judgement)
+            answer = extract_answering(judgement)
+
+            meta = {
+                "key": get_sample_key(d),
+                "video": d["videos"][0] if d.get("videos") else None,
+                "judgement": judgement,
+                "thinking": thinking,
+                "raw_sample": d,
+            }
+
+            if "NO" not in answer.upper():
+                results.append(
+                    {
+                        "key": meta["key"],
+                        "video": meta["video"],
+                        "thinking": meta["thinking"],
+                        "nouns": [],
+                        "sample": meta["raw_sample"],
+                    }
+                )
+                continue
 
             prompt = template.format(judgement=thinking)
             messages = [{"role": "user", "content": prompt}]
@@ -99,37 +128,27 @@ def main():
             )
 
             prompts.append(text)
-            batch_meta.append(
-                {
-                    "key": get_sample_key(d),
-                    "video": d["videos"][0] if d.get("videos") else None,
-                    "judgement": judgement,
-                    "thinking": thinking,
-                    "raw_sample": d,
-                }
-            )
+            batch_meta.append(meta)
 
-        outputs = llm.generate(prompts, sampling_params)
+        if prompts:
+            outputs = llm.generate(prompts, sampling_params)
 
-        for meta, output in zip(batch_meta, outputs):
-            content = output.outputs[0].text.strip()
-            nouns = normalize_nouns(content)
+            for meta, output in zip(batch_meta, outputs):
+                content = output.outputs[0].text.strip()
+                nouns = normalize_nouns(content)
 
-            results.append(
-                {
-                    "key": meta["key"],
-                    "video": meta["video"],
-                    "judgement": meta["judgement"],
-                    "thinking": meta["thinking"],
-                    "nouns_raw": content,
-                    "nouns": nouns,
-                    "sample": meta["raw_sample"],
-                }
-            )
+                results.append(
+                    {
+                        "key": meta["key"],
+                        "video": meta["video"],
+                        "thinking": meta["thinking"],
+                        "nouns": nouns,
+                        "sample": meta["raw_sample"],
+                    }
+                )
 
         with open(args.output_json, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=4)
-
 
 if __name__ == "__main__":
     main()

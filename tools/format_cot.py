@@ -9,15 +9,14 @@ from vllm import LLM, SamplingParams
 
 
 template = (
-    "Polish and rewrite the critique into an step-by-step chain-of-thought format. "
-    "Do not add new details. Use English only. critique: {}"
+    "Please polish the following sentence into fluent English without adding any new details: {sentence}"
 )
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_json", type=str, default="data/train_fixed.json")
-    parser.add_argument("--output_json", type=str, default="data/train_cot.json")
+    parser.add_argument("--output_json", type=str, default="data/train_polished.json")
     parser.add_argument(
         "--model_name_or_path",
         type=str,
@@ -29,6 +28,14 @@ def parse_args():
     parser.add_argument("--tensor_parallel_size", type=int, default=8)
     parser.add_argument("--max_model_len", type=int, default=8192)
     return parser.parse_args()
+
+def remove_ai_sentence(text: str) -> str:
+    """
+    Remove any sentence containing 'AI' from a string.
+    """
+    pattern = r'[^.!?]*\bAI\b[^.!?]*[.!?]?\s*'
+    cleaned = re.sub(pattern, '', text, flags=re.IGNORECASE)
+    return cleaned.strip()
 
 
 def batched(lst, batch_size):
@@ -91,25 +98,27 @@ def merge_two_yes_no(v1: str, v2: str) -> str:
 def rewrite_answer(answer_text: str) -> str:
     fields = parse_yes_no_fields(answer_text)
 
-    video_quality = fields.get("Video Quality", "No")
-    motion_quality = fields.get("Subject Movement", "No")
+    assert len(fields) == 7, f"Expected 7 fields, but got {fields}"
+    
+    video_quality = fields.get("Video Quality", "Failed")
+    motion_quality = fields.get("Subject Movement", "Failed")
 
-    physical_interaction = fields.get("Physical Interaction", "No")
-    cause_effect = fields.get("Cause-Effect", "No")
-    physical_interaction_quality = merge_two_yes_no(physical_interaction, cause_effect)
+    physical_interaction = fields.get("Physical Interaction", "Failed")
+    cause_effect = fields.get("Cause-Effect", "Failed")
 
-    subject_existence = fields.get("Subject Existence", "No")
-    object_existence = fields.get("Object Existence", "No")
-    entity_existence = merge_two_yes_no(subject_existence, object_existence)
+    subject_existence = fields.get("Subject Existence", "Failed")
+    object_existence = fields.get("Object Existence", "Failed")
 
-    overall_alignment = fields.get("Subject-Object Interaction", "No")
+    overall_alignment = fields.get("Subject-Object Interaction", "Failed")
 
     new_answer = (
         f"Video Quality: {video_quality}. "
-        f"Motion Quality: {motion_quality}. "
-        f"Physical Interaction Quality: {physical_interaction_quality}. "
-        f"Entity Existence: {entity_existence}. "
-        f"Overall Alignment: {overall_alignment}."
+        f"Subject Movement: {motion_quality}. "
+        f"Physical Interaction: {physical_interaction}. "
+        f"Cause-Effect: {cause_effect}. "
+        f"Subject Existence: {subject_existence}. "
+        f"Object Existence: {object_existence}. "
+        f"Subject-Object Interaction: {overall_alignment}."
     )
     return new_answer
 
@@ -123,35 +132,6 @@ def extract_textual_prompt(question: str) -> str:
     if match:
         return match.group(1).strip()
     return ""
-
-
-def rewrite_question(old_question: str) -> str:
-    textual_prompt = extract_textual_prompt(old_question)
-
-    new_question = (
-        "<video>\n"
-        "Suppose you are an expert in evaluating the quality of AI-generated videos.\n"
-        "Please watch the given video carefully and assess it from the following five dimensions.\n\n"
-        "[Video Quality]\n"
-        "Evaluate whether the video is free from major visual defects, such as blur, lack of detail, "
-        "poor texture, lighting issues, color distortion, flickering, or overexposure.\n\n"
-        "[Motion Quality]\n"
-        "Evaluate whether the subject's motion is natural, smooth, and physically realistic.\n\n"
-        "[Physical Interaction Quality]\n"
-        "Evaluate whether interactions among subjects and/or objects are physically plausible, "
-        "and whether causal relationships are correctly depicted.\n\n"
-        "[Entity Existence]\n"
-        f"Textual prompt: {textual_prompt}\n"
-        "Evaluate whether the main subject and the relevant objects described in the prompt are present "
-        "and accurate in the video.\n\n"
-        "[Overall Alignment]\n"
-        "Evaluate whether the video overall matches the textual prompt, especially in terms of the "
-        "described interaction between the subject and the objects.\n\n"
-        "Provide your reasoning in a clear step-by-step manner.\n"
-        "Then output the final results in the following format:\n"
-        "Video Quality: Yes/No. Motion Quality: Yes/No. Physical Interaction Quality: Yes/No. Entity Existence: Yes/No. Overall Alignment: Yes/No.\n"
-    )
-    return new_question
 
 
 def main():
@@ -185,7 +165,7 @@ def main():
             thinking = extract_thinking(judgement)
             answer = extract_answering(judgement)
 
-            prompt = template.format(thinking)
+            prompt = template.format(sentence=thinking)
             messages = [{"role": "user", "content": prompt}]
             text = tokenizer.apply_chat_template(
                 messages,
@@ -207,6 +187,7 @@ def main():
         for meta, output in zip(batch_meta, outputs):
             content = output.outputs[0].text.strip()
             cot = normalize_cot(content)
+            cot = remove_ai_sentence(cot)
 
             new_sample = copy.deepcopy(meta["raw_sample"])
             old_judgement = new_sample["conversations"][-1]["value"]
@@ -220,11 +201,6 @@ def main():
             new_judgement = replace_tag_content(new_judgement, "answer", new_answer)
 
             new_sample["conversations"][-1]["value"] = new_judgement
-
-            # replace question
-            new_sample["conversations"][0]["value"] = rewrite_question(
-                new_sample["conversations"][0]["value"]
-            )
             results.append(new_sample)
 
         with open(args.output_json, "w", encoding="utf-8") as f:

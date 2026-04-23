@@ -145,22 +145,8 @@ def train(attn_implementation="flash_attention_2"):
             dtype=(torch.bfloat16 if training_args.bf16 else None),
         )
         data_args.model_type = "qwen3vl"
-    elif "qwen2.5" in model_args.model_name_or_path.lower():
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            dtype=(torch.bfloat16 if training_args.bf16 else None),
-        )
-        data_args.model_type = "qwen2.5vl"
     else:
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            dtype=(torch.bfloat16 if training_args.bf16 else None),
-        )
-        data_args.model_type = "qwen2vl"
+        raise ValueError(f"Unsupported model type: {model_args.model_name_or_path}")
 
     print(f'the initlized model is {model_args.model_name_or_path} the class is {model.__class__.__name__}')
     processor = AutoProcessor.from_pretrained(
@@ -168,7 +154,7 @@ def train(attn_implementation="flash_attention_2"):
     )
 
     num_added = processor.tokenizer.add_tokens(
-        ["<answer>", "</answer>", "<region>", "</region>", "<t>", "</t>"]
+        ["<answer>", "</answer>", "<box>", "</box>", "<t>", "</t>"]
     )
     if num_added > 0:
         model.resize_token_embeddings(len(processor.tokenizer))

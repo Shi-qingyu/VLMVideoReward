@@ -11,6 +11,16 @@ VIDEOREWARD_FIXED = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_POLISHED = {
+    "annotation_path": "./data/train_polished.json",
+    "data_path": "./data",
+}
+
+VIDEOREWARD_T_POLISHED_V3 = {
+    "annotation_path": "./data/train_t_polished_v3.json",
+    "data_path": "./data",
+}
+
 VIDEOREWARD_REGION = {
     "annotation_path": "./data/train_region.json",
     "data_path": "./data",
@@ -31,6 +41,11 @@ VIDEOREWARD_EVAL = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_EVAL_POLISHED = {
+    "annotation_path": "./data/eval_polished.json",
+    "data_path": "./data",
+}
+
 data_dict = {
     "videoreward": VIDEOREWARD,
     "videoreward_fixed": VIDEOREWARD_FIXED,
@@ -38,6 +53,9 @@ data_dict = {
     "videoreward_region": VIDEOREWARD_REGION,
     "videoreward_t": VIDEOREWARD_T,
     "videoreward_eval": VIDEOREWARD_EVAL,
+    "videoreward_polished": VIDEOREWARD_POLISHED,
+    "videoreward_t_polished_v3": VIDEOREWARD_T_POLISHED_V3,
+    "videoreward_eval_polished": VIDEOREWARD_EVAL_POLISHED,
 }
 
 

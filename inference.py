@@ -1,14 +1,32 @@
-from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
+model_path = "output/qwen3vl-2b-baseline-1e-bs4-ga4-t-polished-v3-457/checkpoint-300"
 # default: Load the model on the available device(s)
 model = AutoModelForImageTextToText.from_pretrained(
-    "output/qwen3vl-2b-baseline-1e-bs4-ga4-t-457/checkpoint-697", 
+    model_path, 
     dtype="auto", 
     device_map="auto"
 )
+processor = AutoProcessor.from_pretrained(model_path)
 
-processor = AutoProcessor.from_pretrained("output/qwen3vl-2b-baseline-1e-bs4-ga4-t-457/checkpoint-697")
+question = (
+    "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\n"
+    "Evaluate the video according to the following dimensions.\n"
+    "Video Quality: whether the video is free from major visual defects, including blur, lack of detail, "
+    "poor texture, lighting issues, color distortion, flickering, and overexposure.\n"
+    "Subject Movement: whether the subject's motion is natural, smooth, and realistic.\n"
+    "Physical Interaction: whether interactions among subjects and/or objects are physically plausible.\n"
+    "Cause-Effect: whether causal relationships are correctly depicted.\n"
+    "Subject Existence: whether the subject described in the prompt appears and is accurate.\n"
+    "Object Existence: whether the object described in the prompt appears and is accurate.\n"
+    "Subject-Object Interaction: whether the interaction described in the prompt is correctly represented.\n"
+    "Prompt: {prompt} Provide your reasoning trace between think tags <think> and </think>, "
+    "then output \"Yes\" or \"No\" for each dimension between <answer> and </answer>."
+)
+prompt = "A Black man in a short-sleeve shirt stands at a kitchen stove. He holds a box of dry pasta in one hand and pours the pasta into a pot of boiling water. Using a wooden spoon, he gently presses the pasta down to ensure it is fully submerged. The background shows kitchen counters and utensils. The camera remains steady, focusing on the man’s hands and the pot."
+
+user_input = question.format(prompt=prompt)
 
 messages = [
     {
@@ -20,7 +38,7 @@ messages = [
             },
             {
                 "type": "text", 
-                "text": "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\nPlease watch the frames of a given video.\nEvaluate the video according to the following three dimensions.\n\n[Visual Quality]\nAssess the video in terms of:\nVideo Quality: whether the video is free from major visual defects, including blur, lack of detail, poor texture, lighting issues, color distortion, flickering, and overexposure.\n\n[Motion & Physical Consistency]\nAssess the video in terms of:\nSubject Movement: whether the subject's motion is natural, smooth, and physically realistic.\nPhysical Interaction: whether interactions among subjects and/or objects are physically plausible.\nCause-Effect: whether causal relationships are correctly depicted.\n\n[Prompt Alignment]\nTextual prompt: A Black man in a short-sleeve shirt stands at a kitchen stove. He holds a box of dry pasta in one hand and pours the pasta into a pot of boiling water. Using a wooden spoon, he gently presses the pasta down to ensure it is fully submerged. The background shows kitchen counters and utensils. The camera remains steady, focusing on the man’s hands and the pot..\nAssess whether the video is well-aligned with the textual prompt in terms of:\nSubject Existence: whether the subject described in the prompt appears and is accurate.\nObject Existence: whether the object described in the prompt appears and is accurate.\nSubject-Object Interaction: whether the interaction described in the prompt is correctly represented.\n\nProvide your reasoning, then output \"Yes\" or \"No\"."
+                "text": user_input
             },
         ],
     }
@@ -54,18 +72,6 @@ inputs = processor.apply_chat_template(
     return_dict=True,
     return_tensors="pt",
 )
-
-# text = processor.apply_chat_template(
-#     messages, tokenize=False, add_generation_prompt=True
-# )
-# image_inputs, video_inputs = process_vision_info(messages)
-# inputs = processor(
-#     text=[text],
-#     images=image_inputs,
-#     videos=video_inputs,
-#     padding=True,
-#     return_tensors="pt",
-# )
 
 inputs = inputs.to(model.device)
 
