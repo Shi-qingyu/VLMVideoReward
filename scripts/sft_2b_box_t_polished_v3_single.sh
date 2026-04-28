@@ -10,7 +10,7 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 deepspeed=./scripts/zero3.json
 
 # Model configuration
-llm=Qwen/Qwen3-VL-4B-Instruct  # Using HuggingFace model ID
+llm=Qwen/Qwen3-VL-2B-Instruct  # Using HuggingFace model ID
 
 # Training hyperparameters
 lr=5e-5
@@ -21,10 +21,10 @@ grad_accum_steps=4
 entry_file=qwenvl/train/train_qwen_sft.py 
 
 # Dataset configuration (replace with public dataset names)
-datasets=videoreward_region
+datasets=videoreward_box_t_polished_v3_single
 
 # Output configuration
-run_name="qwen3vl-4b-baseline-1e-bs4-ga4-region-457"
+run_name="qwen3vl-2b-baseline-1e-bs4-ga4-box-t-polished-v3-single-457"
 output_dir=./output/${run_name}
 
 # Training arguments
@@ -43,11 +43,14 @@ args="
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
-    --max_pixels 50176 \
-    --min_pixels 784 \
+    --video_fps 2 \
+    --video_max_frames 20 \
+    --video_min_frames 10 \
+    --video_max_pixels 4194304 \
+    --video_min_pixels 1048576 \
     --eval_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 50 \
+    --save_steps 100 \
     --save_total_limit 1 \
     --learning_rate ${lr} \
     --weight_decay 0 \
@@ -55,11 +58,12 @@ args="
     --max_grad_norm 1 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 8192 \
+    --model_max_length 16384 \
     --gradient_checkpointing True \
     --dataloader_num_workers 8 \
     --run_name ${run_name} \
-    --report_to wandb"
+    --report_to wandb
+"
 
 # Launch training
 torchrun --nproc_per_node=${NPROC_PER_NODE} \

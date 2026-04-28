@@ -29,7 +29,7 @@ OLD_KEYS = [
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--dataset_use", type=str, default="videoreward_eval")
+    parser.add_argument("--dataset_use", type=str, default="videoreward_eval_polished_v3")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
     parser.add_argument("--using_cot", action="store_true", default=True)
@@ -37,7 +37,7 @@ def get_args():
 
     # vLLM args
     parser.add_argument("--tensor_parallel_size", type=int, default=8)
-    parser.add_argument("--gpu_memory_utilization", type=float, default=0.8)
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.7)
     parser.add_argument("--max_num_seqs", type=int, default=8)
     return parser.parse_args()
 

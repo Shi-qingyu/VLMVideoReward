@@ -2,32 +2,7 @@ import re
 
 # Define placeholders for dataset paths
 VIDEOREWARD = {
-    "annotation_path": "./data/train.json",
-    "data_path": "./data",
-}
-
-VIDEOREWARD_FIXED = {
     "annotation_path": "./data/train_fixed.json",
-    "data_path": "./data",
-}
-
-VIDEOREWARD_POLISHED = {
-    "annotation_path": "./data/train_polished.json",
-    "data_path": "./data",
-}
-
-VIDEOREWARD_T_POLISHED_V3 = {
-    "annotation_path": "./data/train_t_polished_v3.json",
-    "data_path": "./data",
-}
-
-VIDEOREWARD_REGION = {
-    "annotation_path": "./data/train_region.json",
-    "data_path": "./data",
-}
-
-VIDEOREWARD_COT = {
-    "annotation_path": "./data/train_cot.json",
     "data_path": "./data",
 }
 
@@ -36,26 +11,45 @@ VIDEOREWARD_T = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_POLISHED = {
+    "annotation_path": "./data/train_polished_v3.json",
+    "data_path": "./data",
+}
+
+VIDEOREWARD_T_POLISHED_V3 = {
+    "annotation_path": "./data/train_t_polished_v3.json",
+    "data_path": "./data",
+}
+
+VIDEOREWARD_BOX_T_POLISHED_V3 = {
+    "annotation_path": "./data/train_box_t_polished_v3.json",
+    "data_path": "./data",
+}
+
+VIDEOREWARD_BOX_T_POLISHED_V3_SINGLE = {
+    "annotation_path": "./data/train_box_t_polished_v3_single.json",
+    "data_path": "./data",
+}
+
 VIDEOREWARD_EVAL = {
     "annotation_path": "./data/eval_fixed.json",
     "data_path": "./data",
 }
 
-VIDEOREWARD_EVAL_POLISHED = {
-    "annotation_path": "./data/eval_polished.json",
+VIDEOREWARD_EVAL_POLISHED_V3 = {
+    "annotation_path": "./data/eval_polished_v3.json",
     "data_path": "./data",
 }
 
 data_dict = {
     "videoreward": VIDEOREWARD,
-    "videoreward_fixed": VIDEOREWARD_FIXED,
-    "videoreward_cot": VIDEOREWARD_COT,
-    "videoreward_region": VIDEOREWARD_REGION,
     "videoreward_t": VIDEOREWARD_T,
     "videoreward_eval": VIDEOREWARD_EVAL,
     "videoreward_polished": VIDEOREWARD_POLISHED,
     "videoreward_t_polished_v3": VIDEOREWARD_T_POLISHED_V3,
-    "videoreward_eval_polished": VIDEOREWARD_EVAL_POLISHED,
+    "videoreward_box_t_polished_v3": VIDEOREWARD_BOX_T_POLISHED_V3,
+    "videoreward_box_t_polished_v3_single": VIDEOREWARD_BOX_T_POLISHED_V3_SINGLE,
+    "videoreward_eval_polished_v3": VIDEOREWARD_EVAL_POLISHED_V3,
 }
 
 

@@ -7,7 +7,7 @@ from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
 
-template = "From the following judgment, extract main visible anomalous objects. Choose the most salient concrete, visually identifiable noun or noun phrase mentioned in the judgment, using the exact words from the judgment. Ignore attributes, actions, abstract concepts, evaluations, and nationality/ethnicity descriptions. Judgment: {judgement}. Return objects seperated by comma."
+template = "From the following judgment, extract only one main visible anomalous subject or object. Choose the most salient concrete, visually identifiable noun mentioned in the judgment, using the exact words from the judgment. Ignore attributes, actions, abstract concepts, evaluations, and nationality/ethnicity descriptions. Judgment: {judgement}. Return only one subject or object."
 
 
 def parse_args():

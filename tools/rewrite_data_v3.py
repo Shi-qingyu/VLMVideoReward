@@ -267,8 +267,8 @@ def convert_item(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main():
-    input_file = "data/train_t.json"
-    output_file = "data/train_t_polished_v3.json"
+    input_file = "data/train_fixed.json"
+    output_file = "data/train_polished_v3.json"
 
     with open(input_file, "r", encoding="utf-8") as f:
         data = json.load(f)
