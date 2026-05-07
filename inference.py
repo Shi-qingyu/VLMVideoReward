@@ -1,7 +1,7 @@
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
-model_path = "output/qwen3vl-8b-baseline-1e-bs4-ga4-box-t-polished-v3-457/checkpoint-100"
+model_path = "output/qwen3vl-2b-baseline-1e-bs4-ga4-t-merged-457"
 # default: Load the model on the available device(s)
 model = AutoModelForImageTextToText.from_pretrained(
     model_path, 
@@ -24,6 +24,21 @@ question = (
     "Prompt: {prompt} Provide your reasoning trace between think tags <think> and </think>, "
     "then output \"Yes\" or \"No\" for each dimension between <answer> and </answer>."
 )
+
+question = (
+    "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\n"
+    "Evaluate the video according to the following dimensions.\n"
+    "Video Quality: whether the video is free from major visual defects, including blur, lack of detail, "
+    "poor texture, lighting issues, color distortion, flickering, and overexposure.\n"
+    "Motion & Interaction: whether the subject's motion is natural, smooth, and realistic; "
+    "whether interactions among subjects and/or objects are physically plausible; "
+    "and whether causal relationships are correctly depicted.\n"
+    "Prompt Alignment: whether the subject and object described in the prompt appear accurately, "
+    "and whether the subject-object interaction described in the prompt is correctly represented.\n"
+    "Prompt: {prompt} Provide your reasoning trace between think tags <think> and </think>, "
+    "then output \"Yes\" or \"No\" for each dimension between <answer> and </answer>."
+)
+
 prompt = "A Black man in a short-sleeve shirt stands at a kitchen stove. He holds a box of dry pasta in one hand and pours the pasta into a pot of boiling water. Using a wooden spoon, he gently presses the pasta down to ensure it is fully submerged. The background shows kitchen counters and utensils. The camera remains steady, focusing on the man’s hands and the pot."
 
 user_input = question.format(prompt=prompt)
