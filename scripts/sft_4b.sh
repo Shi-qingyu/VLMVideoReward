@@ -18,7 +18,7 @@ batch_size=8
 grad_accum_steps=4
 
 # Training entry point
-entry_file=qwenvl/train/train_qwen_sft.py
+entry_file=src/train/train_qwen_sft.py
 
 # Dataset configuration (replace with public dataset names)
 datasets=videoreward

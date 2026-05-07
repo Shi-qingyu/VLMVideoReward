@@ -25,7 +25,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from qwenvl.train.trainer_sft import replace_qwen3_vl_attention_class
+from src.train.trainer_sft import replace_qwen3_vl_attention_class
 
 from transformers import (
     Qwen2VLForConditionalGeneration,
@@ -33,8 +33,8 @@ from transformers import (
     Qwen3VLForConditionalGeneration,
     Qwen3VLMoeForConditionalGeneration
 )
-from qwenvl.dataset.data_processor import make_supervised_data_module
-from qwenvl.train.argument import (
+from src.dataset.data_processor import make_supervised_data_module
+from src.train.argument import (
     ModelArguments,
     DataArguments,
     SFTArguments,

@@ -41,8 +41,8 @@ from transformers import (
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
-from qwenvl.train.argument import GRPOArguments
-from qwenvl.train.trainer_sft import create_optimizer
+from src.train.argument import GRPOArguments
+from src.train.trainer_sft import create_optimizer
 
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 

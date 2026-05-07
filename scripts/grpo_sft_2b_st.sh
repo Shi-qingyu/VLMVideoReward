@@ -27,7 +27,7 @@ beta=0.04
 weight_decay=0.01
 
 # Training entry point
-entry_file=qwenvl/train/train_qwen_grpo.py 
+entry_file=src/train/train_qwen_grpo.py 
 
 # Dataset configuration (replace with public dataset names)
 datasets=videoreward_region

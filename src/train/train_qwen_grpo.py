@@ -31,14 +31,14 @@ from transformers import (
     Qwen3VLForConditionalGeneration,
     Qwen3VLMoeForConditionalGeneration
 )
-from qwenvl.dataset.data_processor import make_rl_data_module
-from qwenvl.train.argument import (
+from src.dataset.data_processor import make_rl_data_module
+from src.train.argument import (
     ModelArguments,
     DataArguments,
     GRPOArguments,
 )
-from qwenvl.train.trainer_grpo import Qwen3VLGRPOTrainer
-from qwenvl.train import reward_func as reward_module
+from src.train.trainer_grpo import Qwen3VLGRPOTrainer
+from src.train import reward_func as reward_module
 from transformers import AutoProcessor, Trainer
 
 local_rank = None
@@ -70,7 +70,7 @@ def load_reward_funcs(reward_str):
     reward_funcs = []
     for name in reward_names:
         if not hasattr(reward_module, name):
-            raise ValueError(f"Reward function {name} not found in the file qwenvl.train.reward_func.py :(")
+            raise ValueError(f"Reward function {name} not found in the file src.train.reward_func.py :(")
         reward_funcs.append(getattr(reward_module, name))
     
     return reward_funcs

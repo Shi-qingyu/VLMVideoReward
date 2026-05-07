@@ -10,7 +10,7 @@ from collections import defaultdict
 from torch.utils.data import DataLoader
 import multiprocessing as mp
 
-from qwenvl.dataset.data_processor import make_rl_data_module
+from src.dataset.data_processor import make_rl_data_module
 from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 

@@ -7,11 +7,12 @@ This repository provides a training framework for Qwen VL models. The are two st
 
 ## Repository Structure
 
-The `qwenvl` directory contains the following components:
+The `src` directory contains the following components:
 
 ### `train/`
-- `trainer.py`: Main trainer updated from Huggingface Trainer
-- `train_qwen.py`: Main file for training
+- `trainer_sft.py`: Main SFT trainer updated from Huggingface Trainer
+- `train_qwen_sft.py`: Main entry file for SFT training
+- `train_qwen_grpo.py`: Main entry file for GRPO training
 - `argument.py`: Dataclasses for model, data and training arguments
 
 ### `dataset/`
@@ -133,7 +134,7 @@ The customized data should have the format like:
 ]
 ```
 
-Some examples are shown in `demo/single_images.json` and `demo/video.json` and these json files could be used for training.
+The examples above illustrate the expected JSON structure and can be adapted directly for training.
 
 ### Dataset config for training
 
@@ -141,7 +142,7 @@ To add or modify datasets for training, follow these steps:
 
 ### Dataset Definition Structure
 
-1. **Create a dataset dictionary** in the format in the file `qwenvl/dataset/__init__.py`:
+1. **Create a dataset dictionary** in the format in the file `src/dataset/__init__.py`:
 ```python
 DATASET_NAME = {
     "annotation_path": "/path/to/annotations.json",
@@ -185,7 +186,7 @@ bash scripts/sft_2b.sh
 ```
 
 ### RL
-To train with RL, you first need to define your own reward function in `qwenvl/train/reward_func.py`. An example pseudo reward function is shown below:
+To train with RL, you first need to define your own reward function in `src/train/reward_func.py`. An example pseudo reward function is shown below:
 
 ```python
 def pseudo_reward(
@@ -213,7 +214,6 @@ The script accepts arguments in three categories:
    - `data_packing` requires preprocess with `tools/pack_data.py`
    - Training hyperparameters, the suggested learning rate is from 1e-6 to 2e-7
    - Training resolution is critical for the model performances, hence `--max_pixels` and `--min_pixels` should be properly set
-   - Training with Qwen2.5-VL-32B model, you should have 8 80G GPU refering to `scripts/sft_32b.sh`
+   - Training with a Qwen2.5-VL-32B model typically requires 8x80G GPUs
    - `"_attn_implementation": "flash_attention_2",` could be add in the config.json of the model to use flash attention.
    - The Qwen3VL MoE model does not support DeepSpeed with ZeRO-3. Additionally, Hugging Face’s official implementation does not include support for load balancing loss currently.
-

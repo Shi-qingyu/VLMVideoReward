@@ -4,7 +4,7 @@ import json
 import cv2
 from typing import List, Optional, Tuple
 from tqdm import tqdm
-from qwenvl.train.utils import extract_tag_content, parse_box
+from src.train.utils import extract_tag_content, parse_box
 
 ROOT = "data"
 SAVE_ROOT = "data/eval_w_boxes"
