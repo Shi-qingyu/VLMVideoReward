@@ -46,6 +46,19 @@ class SFTArguments(transformers.TrainingArguments):
     lora_alpha: int = field(default=128)
     lora_dropout: float = field(default=0.0)
 
+    # Visual distillation config
+    distill_enable: bool = field(default=False)
+    distill_teacher_arch: str = field(default="vjepa2_1_vit_large_384")
+    distill_teacher_ckpt: str = field(default="vjepa2_1_vitl_dist_vitG_384.pt")
+    distill_weight: float = field(default=1.0)
+    distill_loss_type: str = field(default="mse")
+    distill_feature_source: str = field(default="visual")
+    distill_normalize_features: bool = field(default=True)
+    distill_teacher_image_size: int = field(default=384)
+    distill_teacher_num_video_frames: int = field(default=16)
+    distill_use_images: bool = field(default=True)
+    distill_use_videos: bool = field(default=True)
+
 
 @dataclass
 class GRPOArguments(transformers.TrainingArguments):

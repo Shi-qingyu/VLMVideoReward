@@ -1,4 +1,8 @@
 #!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 
 # Distributed training configuration
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
@@ -7,25 +11,43 @@ NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
 # DeepSpeed configuration
-deepspeed=./scripts/zero3.json
+deepspeed=${DEEPSPEED_CONFIG:-"${SCRIPT_DIR}/zero3.json"}
 
 # Model configuration
-llm=Qwen/Qwen3-VL-2B-Instruct  # Using HuggingFace model ID
+llm=${LLM_MODEL:-"Qwen/Qwen3-VL-2B-Instruct"}
 
 # Training hyperparameters
-lr=5e-5
-batch_size=4
-grad_accum_steps=4
+lr=${LR:-5e-5}
+batch_size=${BATCH_SIZE:-4}
+grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 
 # Training entry point
-entry_file=src/train/train_qwen_sft.py 
+entry_file=${ENTRY_FILE:-"${REPO_ROOT}/src/train/train_qwen_sft.py"}
 
-# Dataset configuration (replace with public dataset names)
-datasets=videoreward_t_merged
+# Dataset configuration
+datasets=${DATASETS:-"videoreward_t_merged"}
+
+# V-JEPA 2.1 distillation configuration
+distill_enable=${DISTILL_ENABLE:-true}
+distill_teacher_arch=${DISTILL_TEACHER_ARCH:-"vjepa2_1_vit_large_384"}
+distill_teacher_ckpt=${DISTILL_TEACHER_CKPT:-"${REPO_ROOT}/vjepa2_1_vitl_dist_vitG_384.pt"}
+distill_weight=${DISTILL_WEIGHT:-1.0}
+distill_loss_type=${DISTILL_LOSS_TYPE:-"mse"}
+distill_feature_source=${DISTILL_FEATURE_SOURCE:-"cosine"}
+distill_teacher_image_size=${DISTILL_TEACHER_IMAGE_SIZE:-384}
+distill_teacher_num_video_frames=${DISTILL_TEACHER_NUM_VIDEO_FRAMES:-16}
+distill_use_images=${DISTILL_USE_IMAGES:-true}
+distill_use_videos=${DISTILL_USE_VIDEOS:-true}
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-t-merged-457"
-output_dir=./output/${run_name}
+run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
+output_dir=${OUTPUT_DIR:-"${REPO_ROOT}/output/${run_name}"}
+
+if [[ "${distill_enable}" == "true" && ! -f "${distill_teacher_ckpt}" ]]; then
+    echo "V-JEPA teacher checkpoint not found: ${distill_teacher_ckpt}"
+    echo "Set DISTILL_TEACHER_CKPT=/path/to/vjepa2_1_vitl_dist_vitG_384.pt before launching."
+    exit 1
+fi
 
 # Training arguments
 args="
@@ -33,10 +55,20 @@ args="
     --model_name_or_path "${llm}" \
     --dataset_use ${datasets} \
     --data_flatten True \
-    --tune_mm_vision False \
+    --tune_mm_vision True \
     --tune_mm_mlp True \
     --tune_mm_llm True \
     --using_cot True \
+    --distill_enable ${distill_enable} \
+    --distill_teacher_arch ${distill_teacher_arch} \
+    --distill_teacher_ckpt ${distill_teacher_ckpt} \
+    --distill_weight ${distill_weight} \
+    --distill_loss_type ${distill_loss_type} \
+    --distill_feature_source ${distill_feature_source} \
+    --distill_teacher_image_size ${distill_teacher_image_size} \
+    --distill_teacher_num_video_frames ${distill_teacher_num_video_frames} \
+    --distill_use_images ${distill_use_images} \
+    --distill_use_videos ${distill_use_videos} \
     --bf16 \
     --output_dir ${output_dir} \
     --num_train_epochs 1 \

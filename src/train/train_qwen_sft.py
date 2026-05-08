@@ -27,6 +27,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.train.trainer_sft import replace_qwen3_vl_attention_class
+from src.train.trainer_distill import Qwen3VLDistillationTrainer
 
 from transformers import Qwen3VLForConditionalGeneration
 from src.dataset.data_processor import make_supervised_data_module
@@ -192,9 +193,16 @@ def train(attn_implementation="flash_attention_2"):
 
         if is_rank0_or_single_process():
             model.model.print_trainable_parameters()
+
+    if training_args.distill_enable and not training_args.tune_mm_vision:
+        logging.warning(
+            "Visual distillation is enabled while tune_mm_vision=False. "
+            "This will train the distillation projector, but the Qwen vision tower itself stays frozen."
+        )
     
     data_module = make_supervised_data_module(processor, data_args=data_args)
-    trainer = Trainer(
+    trainer_cls = Qwen3VLDistillationTrainer if training_args.distill_enable else Trainer
+    trainer = trainer_cls(
         model=model, processing_class=processor, args=training_args, **data_module
     )
 

@@ -52,6 +52,19 @@ def _normalize_media_list(media):
     return list(media)
 
 
+def _resolve_media_paths(source: Dict[str, Any]) -> tuple[List[str], List[str]]:
+    base_path = Path(source.get("data_path", ""))
+    images = [
+        _make_abs_paths(base_path, img)
+        for img in _normalize_media_list(source.get("images"))
+    ]
+    videos = [
+        _make_abs_paths(base_path, vid)
+        for vid in _normalize_media_list(source.get("videos"))
+    ]
+    return images, videos
+
+
 def _get_answer_token_ids(tokenizer):
     cached = getattr(tokenizer, "_answer_token_ids", None)
     if cached is not None:
@@ -464,6 +477,7 @@ class LazySupervisedDataset(Dataset):
             self.processor,
             self.data_args.using_cot,
         )
+        image_paths, video_paths = _resolve_media_paths(sources[0])
 
         seq_len = data_dict["input_ids"][0].size(0)
 
@@ -498,6 +512,8 @@ class LazySupervisedDataset(Dataset):
 
         data_dict["position_ids"] = position_ids
         data_dict["attention_mask"] = [seq_len]
+        data_dict["distill_image_paths"] = image_paths
+        data_dict["distill_video_paths"] = video_paths
 
         return data_dict
 
@@ -532,6 +548,16 @@ class LazySupervisedDataset(Dataset):
             "labels": labels,
             "position_ids": position_ids,
             "attention_mask": attention_mask if attention_mask else None,
+            "distill_image_paths": list(
+                itertools.chain.from_iterable(
+                    d.get("distill_image_paths", []) for d in data_list
+                )
+            ),
+            "distill_video_paths": list(
+                itertools.chain.from_iterable(
+                    d.get("distill_video_paths", []) for d in data_list
+                )
+            ),
         }
 
         if any("pixel_values" in d for d in data_list):
@@ -661,6 +687,12 @@ class DataCollatorForSupervisedDataset(object):
         batch["pixel_values_videos"] = concat_videos
         batch["video_grid_thw"] = video_grid_thw
         batch["position_ids"] = position_ids
+        batch["distill_image_paths"] = [
+            instance.get("distill_image_paths", []) for instance in instances
+        ]
+        batch["distill_video_paths"] = [
+            instance.get("distill_video_paths", []) for instance in instances
+        ]
         return batch
 
 
@@ -734,6 +766,12 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         batch["image_grid_thw"] = grid_thw
         batch["pixel_values_videos"] = concat_videos
         batch["video_grid_thw"] = video_grid_thw
+        batch["distill_image_paths"] = [
+            instance.get("distill_image_paths", []) for instance in instances
+        ]
+        batch["distill_video_paths"] = [
+            instance.get("distill_video_paths", []) for instance in instances
+        ]
 
         return batch
 
