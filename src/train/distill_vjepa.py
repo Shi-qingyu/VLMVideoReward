@@ -67,6 +67,7 @@ def _unwrap_teacher_state_dict(checkpoint: dict[str, Any]) -> dict[str, Any]:
 
 def _load_vjepa2_builder(teacher_arch: str):
     _ensure_vjepa2_path()
+    _patch_vjepa2_rope_dtype()
     from src.hub import backbones as vjepa_backbones
 
     if not hasattr(vjepa_backbones, teacher_arch):
@@ -75,6 +76,25 @@ def _load_vjepa2_builder(teacher_arch: str):
             f"Expected one of the builders exposed in vjepa2/src/hub/backbones.py."
         )
     return getattr(vjepa_backbones, teacher_arch)
+
+
+def _patch_vjepa2_rope_dtype() -> None:
+    _ensure_vjepa2_path()
+    import app.vjepa_2_1.models.utils.modules as vjepa_modules
+
+    if getattr(vjepa_modules, "_videoreward_rope_dtype_patch", False):
+        return
+
+    original_rotate = vjepa_modules.rotate_queries_or_keys
+
+    def _patched_rotate_queries_or_keys(x, pos, n_registers, has_cls_first):
+        out = original_rotate(x, pos, n_registers, has_cls_first)
+        if out.dtype != x.dtype:
+            out = out.to(dtype=x.dtype)
+        return out
+
+    vjepa_modules.rotate_queries_or_keys = _patched_rotate_queries_or_keys
+    vjepa_modules._videoreward_rope_dtype_patch = True
 
 
 def build_vjepa2_teacher(teacher_arch: str, checkpoint_path: str) -> nn.Module:
