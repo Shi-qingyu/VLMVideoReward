@@ -10,14 +10,15 @@ This repository provides a training framework for Qwen VL models. The are two st
 The `src` directory contains the following components:
 
 ### `train/`
-- `trainer_sft.py`: Main SFT trainer updated from Huggingface Trainer
-- `train_qwen_sft.py`: Main entry file for SFT training
+- `trainer_sft.py`: Legacy custom Trainer utilities still used by RL-related code
+- `train_qwen_sft.py`: Main SFT entry file, now wrapping `ms-swift`'s `SwiftSft` / `Seq2SeqTrainer`
 - `train_qwen_grpo.py`: Main entry file for GRPO training
 - `argument.py`: Dataclasses for model, data and training arguments
 
 ### `dataset/`
 - `__init__.py`: Contains datasets configs
 - `data_processor.py`: Data processing module for QwenVL models
+- `ms_swift.py`: Converts legacy `conversations/images/videos` data into ms-swift standard datasets
 - `rope2d.py`: Provide RoPE implementation
 
 ## Requirements
@@ -27,6 +28,8 @@ You could install packages through:
 ```bash
 pip install -r requirements.txt
 ```
+
+The SFT entrypoint now depends on the published `ms-swift` package rather than a vendored local copy.
 
 ## Custom Dataset Configuration
 
@@ -179,6 +182,12 @@ You can optionally specify sampling rates by appending `%X` to the dataset name:
 ## Usage
 
 ### SFT
+The `src/train/train_qwen_sft.py` entrypoint now keeps the old script arguments, but internally:
+
+1. Resolves `dataset_use` from `src/dataset/__init__.py`
+2. Converts the legacy dataset into ms-swift standard `messages/images/videos` JSONL
+3. Launches training with `ms-swift`'s `SwiftSft` trainer instead of the raw `transformers.Trainer`
+
 To train the model, make sure to update the `dataset` field in the training script `scripts/sft_2b.sh`:
 
 ```bash
