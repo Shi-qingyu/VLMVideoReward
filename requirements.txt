@@ -7,6 +7,9 @@ deepspeed==0.18.7
 qwen-vl-utils==0.0.14
 datasets==4.6.1
 wandb==0.25.0
+scipy>=1.10
+peft>=0.11
+trl>=0.15
 
 # Web demo UI
 # gradio==5.38.2

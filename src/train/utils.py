@@ -1,7 +1,6 @@
 import re
 import json
 from typing import List, Tuple, Dict
-from scipy.optimize import linear_sum_assignment
 
 
 EXPECTED_KEYS = [
@@ -100,6 +99,8 @@ def mean_matched_iou(gt_boxes, pred_boxes):
         return 1.0
     if len(gt_boxes) == 0 or len(pred_boxes) == 0:
         return 0.0
+
+    from scipy.optimize import linear_sum_assignment
 
     # Build IoU matrix of shape [num_gt, num_pred]
     iou_matrix = []

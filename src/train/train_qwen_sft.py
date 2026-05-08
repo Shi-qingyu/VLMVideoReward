@@ -17,22 +17,18 @@
 import os
 import logging
 import pathlib
-import torch
-import transformers
 import sys
 from pathlib import Path
+
+import torch
+import transformers
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.train.trainer_sft import replace_qwen3_vl_attention_class
 
-from transformers import (
-    Qwen2VLForConditionalGeneration,
-    Qwen2_5_VLForConditionalGeneration,
-    Qwen3VLForConditionalGeneration,
-    Qwen3VLMoeForConditionalGeneration
-)
+from transformers import Qwen3VLForConditionalGeneration
 from src.dataset.data_processor import make_supervised_data_module
 from src.train.argument import (
     ModelArguments,
@@ -84,6 +80,10 @@ local_rank = None
 def rank0_print(*args):
     if local_rank == 0:
         print(*args)
+
+
+def is_rank0_or_single_process() -> bool:
+    return not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
 
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
@@ -142,7 +142,7 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            dtype=(torch.bfloat16 if training_args.bf16 else None),
+            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
         )
         data_args.model_type = "qwen3vl"
     else:
@@ -151,6 +151,7 @@ def train(attn_implementation="flash_attention_2"):
     print(f'the initlized model is {model_args.model_name_or_path} the class is {model.__class__.__name__}')
     processor = AutoProcessor.from_pretrained(
         model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
     )
 
     num_added = processor.tokenizer.add_tokens(
@@ -189,7 +190,7 @@ def train(attn_implementation="flash_attention_2"):
     else:
         set_model(training_args, model)
 
-        if torch.distributed.get_rank() == 0:
+        if is_rank0_or_single_process():
             model.model.print_trainable_parameters()
     
     data_module = make_supervised_data_module(processor, data_args=data_args)

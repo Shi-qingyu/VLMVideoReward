@@ -1,9 +1,7 @@
 import re
-import json
-from typing import List, Tuple, Dict
-from scipy.optimize import linear_sum_assignment
+from typing import List
 
-from utils import *
+from src.train.utils import *
 
 
 def acc_reward(
@@ -76,7 +74,7 @@ def iou_reward(
                     # Compute scalar reward from optimally matched box IoUs
                     reward = mean_matched_iou(gt_boxes, model_output_boxes)
 
-                except Exception as e:
+                except Exception:
                     reward = 0.0
             else:
                 reward = 0.0

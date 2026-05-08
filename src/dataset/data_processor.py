@@ -23,6 +23,10 @@ IMAGE_TOKEN_INDEX = 151655
 VIDEO_TOKEN_INDEX = 151656
 DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_VIDEO_TOKEN = "<video>"
+ANSWER_START_TAG = "<answer>"
+ANSWER_END_TAG = "</answer>"
+MEDIA_PLACEHOLDER_PATTERN = re.compile(r"(<image>|<video>)")
+THINK_CONTENT_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 local_rank = None
 
@@ -32,12 +36,72 @@ def rank0_print(*args):
 
 
 def read_jsonl(path):
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f]
 
 
 def _make_abs_paths(base: Path, files: str) -> str:
     return f"{(base / files).resolve()}"
+
+
+def _normalize_media_list(media):
+    if media is None:
+        return []
+    if isinstance(media, str):
+        return [media]
+    return list(media)
+
+
+def _get_answer_token_ids(tokenizer):
+    cached = getattr(tokenizer, "_answer_token_ids", None)
+    if cached is not None:
+        return cached
+
+    start_ids = tokenizer.encode(ANSWER_START_TAG, add_special_tokens=False)
+    end_ids = tokenizer.encode(ANSWER_END_TAG, add_special_tokens=False)
+    if len(start_ids) != 1 or len(end_ids) != 1:
+        raise ValueError(
+            "Expected <answer> and </answer> to each map to a single token after tokenizer augmentation."
+        )
+
+    cached = (start_ids[0], end_ids[0])
+    setattr(tokenizer, "_answer_token_ids", cached)
+    return cached
+
+
+def _is_whitespace_token(tokenizer, token_id: int) -> bool:
+    cache = getattr(tokenizer, "_whitespace_token_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(tokenizer, "_whitespace_token_cache", cache)
+    if token_id not in cache:
+        decoded = tokenizer.decode(
+            [token_id],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        cache[token_id] = decoded.strip() == ""
+    return cache[token_id]
+
+
+def _build_video_time_instruction(base_path: Path, videos: List[str], processor) -> str:
+    video_processor = getattr(processor, "video_processor", None)
+    if not videos or video_processor is None:
+        return ""
+
+    sample_fps = video_processor.fps
+    temporal_patch_size = video_processor.temporal_patch_size
+    video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
+    vp_output = video_processor(videos=video_pool, return_metadata=True)
+    video_metadata = vp_output.video_metadata[0]
+    video_grid_thw = vp_output.video_grid_thw
+
+    total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
+    duration = video_metadata["duration"]
+    return (
+        f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
+        f"from 0 seconds to {duration:.1f} seconds."
+    )
 
 
 def update_processor_pixels(processor, data_args):
@@ -138,13 +202,8 @@ def update_processor_pixels(processor, data_args):
 
 def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = True, time_instruction: str = "") -> List[Dict[str, Any]]:
     # Extract and normalize images and videos
-    images = item.get("images") or []
-    if isinstance(images, str):
-        images = [images]
-
-    videos = item.get("videos") or []
-    if isinstance(videos, str):
-        videos = [videos]
+    images = _normalize_media_list(item.get("images"))
+    videos = _normalize_media_list(item.get("videos"))
 
     # Build media pools with absolute paths
     image_pool = [
@@ -162,7 +221,7 @@ def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = Tru
         if role == "user":
             content = []
             # Split text by <image> or <video> placeholders while keeping delimiters
-            text_parts = re.split(r"(<image>|<video>)", text)
+            text_parts = MEDIA_PLACEHOLDER_PATTERN.split(text)
 
             for seg in text_parts:
                 if seg == "<image>":
@@ -187,7 +246,7 @@ def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = Tru
         else:
             # Assistant messages contain only text
             if not using_cot:
-                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                text = THINK_CONTENT_PATTERN.sub("", text)
             messages.append({"role": role, "content": [{"type": "text", "text": text}]})
 
     # Check for unused media files
@@ -214,25 +273,9 @@ def preprocess_qwen_visual(
     source = sources[0]
     base_path = Path(source.get("data_path", ""))
 
-    sample_fps = processor.video_processor.fps
-    temporal_patch_size = processor.video_processor.temporal_patch_size
-    videos = source.get("videos") or []
-    if isinstance(videos, str):
-        videos = [videos]
+    videos = _normalize_media_list(source.get("videos"))
+    time_instruction = _build_video_time_instruction(base_path, videos, processor)
 
-    # Build media pools with absolute paths
-    video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
-    vp_output = processor.video_processor(videos=video_pool, return_metadata=True)
-    video_metadata = vp_output.video_metadata[0]
-    video_grid_thw = vp_output.video_grid_thw
-    
-    total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
-    duration = video_metadata["duration"]
-    time_instruction = (
-        f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
-        f"from 0 seconds to {duration:.1f} seconds."
-    )
-    
     messages = _build_messages(source, base_path, using_cot, time_instruction)
     full_result = processor.apply_chat_template(
         messages, tokenize=True, return_dict=True, return_tensors="pt"
@@ -244,20 +287,26 @@ def preprocess_qwen_visual(
 
     labels = torch.full_like(input_ids, IGNORE_INDEX)
 
+    tokenizer = processor.tokenizer
+    answer_start_token_id, answer_end_token_id = _get_answer_token_ids(tokenizer)
     input_ids_flat = input_ids[0].tolist()
     L = len(input_ids_flat)
     pos = 0
     while pos < L:
-        if input_ids_flat[pos] == 77091:
-            ans_start = pos + 2
+        if input_ids_flat[pos] == answer_start_token_id:
+            ans_start = pos + 1
+            while ans_start < L and _is_whitespace_token(tokenizer, input_ids_flat[ans_start]):
+                ans_start += 1
             ans_end = ans_start
-            while ans_end < L and input_ids_flat[ans_end] != 151645:
+            while ans_end < L and input_ids_flat[ans_end] != answer_end_token_id:
                 ans_end += 1
             if ans_end < L:
-                labels[0, ans_start : ans_end + 2] = input_ids[
-                    0, ans_start : ans_end + 2
-                ]
-                pos = ans_end
+                label_end = ans_end + 1
+                while label_end < L and _is_whitespace_token(tokenizer, input_ids_flat[label_end]):
+                    label_end += 1
+                labels[0, ans_start:label_end] = input_ids[0, ans_start:label_end]
+                pos = label_end
+                continue
         pos += 1
 
     full_result["labels"] = labels
@@ -455,79 +504,80 @@ class LazySupervisedDataset(Dataset):
     def _get_packed_item(self, sources) -> Dict[str, torch.Tensor]:
 
         if isinstance(sources, dict):
-            if isinstance(source, dict):
-                sources = [sources]
+            sources = [sources]
+        if not isinstance(sources, list):
+            raise TypeError(f"Unsupported packed source type: {type(sources)}")
+        if len(sources) == 1 and isinstance(sources[0], dict):
             assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
             return self._get_item(sources)
 
-        if isinstance(sources, list):
-            data_list = []
-            new_data_dict = {}
-            for source in sources:
-                if isinstance(source, dict):
-                    source = [source]
-                assert (
-                    len(source) == 1
-                ), f"Don't know why it is wrapped to a list.\n {source}"  # FIXME
-                data_list.append(self._get_item(source))
+        data_list = []
+        new_data_dict = {}
+        for source in sources:
+            if isinstance(source, dict):
+                source = [source]
+            assert (
+                len(source) == 1
+            ), f"Don't know why it is wrapped to a list.\n {source}"  # FIXME
+            data_list.append(self._get_item(source))
 
-            input_ids = torch.cat([d["input_ids"] for d in data_list], dim=1)
-            labels = torch.cat([d["labels"] for d in data_list], dim=1)
-            position_ids = torch.cat([d["position_ids"] for d in data_list], dim=2)
-            attention_mask = [
-                d["attention_mask"][0] for d in data_list if "attention_mask" in d
-            ]
-            new_data_dict = {
-                "input_ids": input_ids,
-                "labels": labels,
-                "position_ids": position_ids,
-                "attention_mask": attention_mask if attention_mask else None,
-            }
+        input_ids = torch.cat([d["input_ids"] for d in data_list], dim=1)
+        labels = torch.cat([d["labels"] for d in data_list], dim=1)
+        position_ids = torch.cat([d["position_ids"] for d in data_list], dim=2)
+        attention_mask = [
+            d["attention_mask"][0] for d in data_list if "attention_mask" in d
+        ]
+        new_data_dict = {
+            "input_ids": input_ids,
+            "labels": labels,
+            "position_ids": position_ids,
+            "attention_mask": attention_mask if attention_mask else None,
+        }
 
-            if any("pixel_values" in d for d in data_list):
-                new_data_dict.update(
-                    {
-                        "pixel_values": torch.cat(
-                            [
-                                d["pixel_values"]
-                                for d in data_list
-                                if "pixel_values" in d
-                            ],
-                            dim=0,
-                        ),
-                        "image_grid_thw": torch.cat(
-                            [
-                                d["image_grid_thw"]
-                                for d in data_list
-                                if "image_grid_thw" in d
-                            ],
-                            dim=0,
-                        ),
-                    }
-                )
+        if any("pixel_values" in d for d in data_list):
+            new_data_dict.update(
+                {
+                    "pixel_values": torch.cat(
+                        [
+                            d["pixel_values"]
+                            for d in data_list
+                            if "pixel_values" in d
+                        ],
+                        dim=0,
+                    ),
+                    "image_grid_thw": torch.cat(
+                        [
+                            d["image_grid_thw"]
+                            for d in data_list
+                            if "image_grid_thw" in d
+                        ],
+                        dim=0,
+                    ),
+                }
+            )
 
-            if any("pixel_values_videos" in d for d in data_list):
-                new_data_dict.update(
-                    {
-                        "pixel_values_videos": torch.cat(
-                            [
-                                d["pixel_values_videos"]
-                                for d in data_list
-                                if "pixel_values_videos" in d
-                            ],
-                            dim=0,
-                        ),
-                        "video_grid_thw": torch.cat(
-                            [
-                                d["video_grid_thw"]
-                                for d in data_list
-                                if "video_grid_thw" in d
-                            ],
-                            dim=0,
-                        ),
-                    }
-                )
-            return new_data_dict
+        if any("pixel_values_videos" in d for d in data_list):
+            new_data_dict.update(
+                {
+                    "pixel_values_videos": torch.cat(
+                        [
+                            d["pixel_values_videos"]
+                            for d in data_list
+                            if "pixel_values_videos" in d
+                        ],
+                        dim=0,
+                    ),
+                    "video_grid_thw": torch.cat(
+                        [
+                            d["video_grid_thw"]
+                            for d in data_list
+                            if "video_grid_thw" in d
+                        ],
+                        dim=0,
+                    ),
+                }
+            )
+        return new_data_dict
 
 
 def pad_and_cat(tensor_list):
@@ -742,24 +792,8 @@ class LazyRLDataset(Dataset):
                 source = self.list_data_dict[cur_i]
                 base_path = Path(source.get("data_path", ""))
 
-                sample_fps = self.processor.video_processor.fps
-                temporal_patch_size = self.processor.video_processor.temporal_patch_size
-                videos = source.get("videos") or []
-                if isinstance(videos, str):
-                    videos = [videos]
-
-                # Build media pools with absolute paths
-                video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
-                vp_output = self.processor.video_processor(videos=video_pool, return_metadata=True)
-                video_metadata = vp_output.video_metadata[0]
-                video_grid_thw = vp_output.video_grid_thw
-                
-                total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
-                duration = video_metadata["duration"]
-                time_instruction = (
-                    f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
-                    f"from 0 seconds to {duration:.1f} seconds."
-                )
+                videos = _normalize_media_list(source.get("videos"))
+                time_instruction = _build_video_time_instruction(base_path, videos, self.processor)
                 messages = _build_messages(source, base_path, self.using_cot, time_instruction)
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
