@@ -2,6 +2,7 @@
 *.json
 occ_gpu*
 .vscode
+*.pt
 
 output
 wandb
