@@ -23,6 +23,8 @@ IMAGE_TOKEN_INDEX = 151655
 VIDEO_TOKEN_INDEX = 151656
 DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_VIDEO_TOKEN = "<video>"
+THINK_START_TAG = "<think>"
+THINK_END_TAG = "</think>"
 ANSWER_START_TAG = "<answer>"
 ANSWER_END_TAG = "</answer>"
 MEDIA_PLACEHOLDER_PATTERN = re.compile(r"(<image>|<video>)")
@@ -65,21 +67,31 @@ def _resolve_media_paths(source: Dict[str, Any]) -> tuple[List[str], List[str]]:
     return images, videos
 
 
-def _get_answer_token_ids(tokenizer):
-    cached = getattr(tokenizer, "_answer_token_ids", None)
-    if cached is not None:
-        return cached
+def _get_tag_token_ids(tokenizer, tag: str) -> List[int]:
+    cache = getattr(tokenizer, "_special_tag_token_ids", None)
+    if cache is None:
+        cache = {}
+        setattr(tokenizer, "_special_tag_token_ids", cache)
 
-    start_ids = tokenizer.encode(ANSWER_START_TAG, add_special_tokens=False)
-    end_ids = tokenizer.encode(ANSWER_END_TAG, add_special_tokens=False)
-    if len(start_ids) != 1 or len(end_ids) != 1:
-        raise ValueError(
-            "Expected <answer> and </answer> to each map to a single token after tokenizer augmentation."
-        )
+    if tag not in cache:
+        token_ids = tokenizer.encode(tag, add_special_tokens=False)
+        if not token_ids:
+            raise ValueError(f"Failed to tokenize special tag: {tag}")
+        cache[tag] = token_ids
+    return cache[tag]
 
-    cached = (start_ids[0], end_ids[0])
-    setattr(tokenizer, "_answer_token_ids", cached)
-    return cached
+
+def _match_token_sequence(tokens: List[int], pos: int, pattern: List[int]) -> bool:
+    end = pos + len(pattern)
+    return end <= len(tokens) and tokens[pos:end] == pattern
+
+
+def _find_token_sequence(tokens: List[int], pattern: List[int], start: int) -> int:
+    max_start = len(tokens) - len(pattern)
+    for pos in range(start, max_start + 1):
+        if _match_token_sequence(tokens, pos, pattern):
+            return pos
+    return -1
 
 
 def _is_whitespace_token(tokenizer, token_id: int) -> bool:
@@ -95,6 +107,22 @@ def _is_whitespace_token(tokenizer, token_id: int) -> bool:
         )
         cache[token_id] = decoded.strip() == ""
     return cache[token_id]
+
+
+def _is_stop_supervision_token(tokenizer, token_id: int) -> bool:
+    special_ids = getattr(tokenizer, "all_special_ids", [])
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_id is not None and token_id == eos_token_id:
+        return True
+    return token_id in special_ids
+
+
+def _extend_supervision_boundary(tokenizer, tokens: List[int], label_end: int) -> int:
+    while label_end < len(tokens) and _is_whitespace_token(tokenizer, tokens[label_end]):
+        label_end += 1
+    if label_end < len(tokens) and _is_stop_supervision_token(tokenizer, tokens[label_end]):
+        label_end += 1
+    return label_end
 
 
 def _build_video_time_instruction(base_path: Path, videos: List[str], processor) -> str:
@@ -115,6 +143,49 @@ def _build_video_time_instruction(base_path: Path, videos: List[str], processor)
         f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
         f"from 0 seconds to {duration:.1f} seconds."
     )
+
+
+def _prepare_shared_qwen_visual_inputs(
+    messages: List[Dict[str, Any]],
+    processor,
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    from qwen_vl_utils import process_vision_info
+
+    image_patch_size = int(getattr(processor.image_processor, "patch_size", 14))
+    rendered_text = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+    image_inputs, video_inputs, video_kwargs = process_vision_info(
+        messages,
+        image_patch_size=image_patch_size,
+        return_video_kwargs=True,
+        return_video_metadata=True,
+    )
+
+    video_metadatas = []
+    videos = None
+    if video_inputs is not None:
+        videos, video_metadatas = zip(*video_inputs)
+        videos = list(videos)
+        video_metadatas = list(video_metadatas)
+
+    processor_kwargs = {
+        "text": [rendered_text],
+        "return_tensors": "pt",
+        "do_resize": False,
+        **video_kwargs,
+    }
+    if image_inputs is not None:
+        processor_kwargs["images"] = image_inputs
+    if videos is not None:
+        processor_kwargs["videos"] = videos
+    if video_metadatas:
+        processor_kwargs["video_metadata"] = video_metadatas
+
+    full_result = processor(**processor_kwargs)
+    return full_result, video_metadatas
 
 
 def update_processor_pixels(processor, data_args):
@@ -279,6 +350,7 @@ def preprocess_qwen_visual(
     sources,
     processor,
     using_cot: bool = True,
+    share_distill_video_sampling: bool = False,
 ) -> Dict:
     if len(sources) != 1:
         raise ValueError(f"Expected 1 source, got {len(sources)}")
@@ -290,9 +362,25 @@ def preprocess_qwen_visual(
     time_instruction = _build_video_time_instruction(base_path, videos, processor)
 
     messages = _build_messages(source, base_path, using_cot, time_instruction)
-    full_result = processor.apply_chat_template(
-        messages, tokenize=True, return_dict=True, return_tensors="pt"
-    )
+    video_metadatas = []
+    if share_distill_video_sampling:
+        try:
+            full_result, video_metadatas = _prepare_shared_qwen_visual_inputs(
+                messages,
+                processor,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Falling back to processor.apply_chat_template for visual inputs because shared Qwen video sampling failed: %s",
+                exc,
+            )
+            full_result = processor.apply_chat_template(
+                messages, tokenize=True, return_dict=True, return_tensors="pt"
+            )
+    else:
+        full_result = processor.apply_chat_template(
+            messages, tokenize=True, return_dict=True, return_tensors="pt"
+        )
 
     input_ids = full_result["input_ids"]
     if isinstance(input_ids, list):
@@ -301,29 +389,64 @@ def preprocess_qwen_visual(
     labels = torch.full_like(input_ids, IGNORE_INDEX)
 
     tokenizer = processor.tokenizer
-    answer_start_token_id, answer_end_token_id = _get_answer_token_ids(tokenizer)
+    think_start_ids = _get_tag_token_ids(tokenizer, THINK_START_TAG)
+    think_end_ids = _get_tag_token_ids(tokenizer, THINK_END_TAG)
+    answer_start_ids = _get_tag_token_ids(tokenizer, ANSWER_START_TAG)
+    answer_end_ids = _get_tag_token_ids(tokenizer, ANSWER_END_TAG)
     input_ids_flat = input_ids[0].tolist()
     L = len(input_ids_flat)
     pos = 0
     while pos < L:
-        if input_ids_flat[pos] == answer_start_token_id:
-            ans_start = pos + 1
-            while ans_start < L and _is_whitespace_token(tokenizer, input_ids_flat[ans_start]):
-                ans_start += 1
-            ans_end = ans_start
-            while ans_end < L and input_ids_flat[ans_end] != answer_end_token_id:
-                ans_end += 1
-            if ans_end < L:
-                label_end = ans_end + 1
-                while label_end < L and _is_whitespace_token(tokenizer, input_ids_flat[label_end]):
-                    label_end += 1
-                labels[0, ans_start:label_end] = input_ids[0, ans_start:label_end]
+        if _match_token_sequence(input_ids_flat, pos, think_start_ids):
+            think_end = _find_token_sequence(
+                input_ids_flat,
+                think_end_ids,
+                pos + len(think_start_ids),
+            )
+            if think_end != -1:
+                label_end = think_end + len(think_end_ids)
+                answer_start = _find_token_sequence(
+                    input_ids_flat,
+                    answer_start_ids,
+                    label_end,
+                )
+                if answer_start != -1:
+                    answer_end = _find_token_sequence(
+                        input_ids_flat,
+                        answer_end_ids,
+                        answer_start + len(answer_start_ids),
+                    )
+                    if answer_end != -1:
+                        label_end = answer_end + len(answer_end_ids)
+                label_end = _extend_supervision_boundary(
+                    tokenizer,
+                    input_ids_flat,
+                    label_end,
+                )
+                labels[0, pos:label_end] = input_ids[0, pos:label_end]
+                pos = label_end
+                continue
+
+        if _match_token_sequence(input_ids_flat, pos, answer_start_ids):
+            answer_end = _find_token_sequence(
+                input_ids_flat,
+                answer_end_ids,
+                pos + len(answer_start_ids),
+            )
+            if answer_end != -1:
+                label_end = _extend_supervision_boundary(
+                    tokenizer,
+                    input_ids_flat,
+                    answer_end + len(answer_end_ids),
+                )
+                labels[0, pos:label_end] = input_ids[0, pos:label_end]
                 pos = label_end
                 continue
         pos += 1
 
     full_result["labels"] = labels
     full_result["input_ids"] = input_ids
+    full_result["distill_video_metadatas"] = video_metadatas
     return full_result
 
 
@@ -476,6 +599,7 @@ class LazySupervisedDataset(Dataset):
             sources,
             self.processor,
             self.data_args.using_cot,
+            getattr(self.data_args, "distill_share_student_video_sampling", False),
         )
         image_paths, video_paths = _resolve_media_paths(sources[0])
 
@@ -514,6 +638,9 @@ class LazySupervisedDataset(Dataset):
         data_dict["attention_mask"] = [seq_len]
         data_dict["distill_image_paths"] = image_paths
         data_dict["distill_video_paths"] = video_paths
+        data_dict["distill_video_metadatas"] = data_dict.get(
+            "distill_video_metadatas", []
+        )
 
         return data_dict
 
@@ -556,6 +683,11 @@ class LazySupervisedDataset(Dataset):
             "distill_video_paths": list(
                 itertools.chain.from_iterable(
                     d.get("distill_video_paths", []) for d in data_list
+                )
+            ),
+            "distill_video_metadatas": list(
+                itertools.chain.from_iterable(
+                    d.get("distill_video_metadatas", []) for d in data_list
                 )
             ),
         }
@@ -693,6 +825,9 @@ class DataCollatorForSupervisedDataset(object):
         batch["distill_video_paths"] = [
             instance.get("distill_video_paths", []) for instance in instances
         ]
+        batch["distill_video_metadatas"] = [
+            instance.get("distill_video_metadatas", []) for instance in instances
+        ]
         return batch
 
 
@@ -771,6 +906,9 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         ]
         batch["distill_video_paths"] = [
             instance.get("distill_video_paths", []) for instance in instances
+        ]
+        batch["distill_video_metadatas"] = [
+            instance.get("distill_video_metadatas", []) for instance in instances
         ]
 
         return batch

@@ -17,9 +17,14 @@ deepspeed=${DEEPSPEED_CONFIG:-"${SCRIPT_DIR}/zero3.json"}
 llm=${LLM_MODEL:-"Qwen/Qwen3-VL-2B-Instruct"}
 
 # Training hyperparameters
-lr=${LR:-5e-5}
+lr=${LR:-1e-5}
 batch_size=${BATCH_SIZE:-4}
 grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
+vision_tower_lr=${VISION_TOWER_LR:-5e-6}
+mm_projector_lr=${MM_PROJECTOR_LR:-5e-5}
+tune_mm_llm=${TUNE_MM_LLM:-False}
+tune_mm_mlp=${TUNE_MM_MLP:-True}
+tune_mm_vision=${TUNE_MM_VISION:-True}
 
 # Training entry point
 entry_file=${ENTRY_FILE:-"${REPO_ROOT}/src/train/train_qwen_sft.py"}
@@ -31,7 +36,9 @@ datasets=${DATASETS:-"videoreward_t_merged"}
 distill_enable=${DISTILL_ENABLE:-true}
 distill_teacher_arch=${DISTILL_TEACHER_ARCH:-"vjepa2_1_vit_large_384"}
 distill_teacher_ckpt=${DISTILL_TEACHER_CKPT:-"${REPO_ROOT}/vjepa2_1_vitl_dist_vitG_384.pt"}
-distill_weight=${DISTILL_WEIGHT:-0.5}
+distill_weight=${DISTILL_WEIGHT:-0.05}
+distill_start_steps=${DISTILL_START_STEPS:-100}
+distill_warmup_steps=${DISTILL_WARMUP_STEPS:-400}
 distill_loss_type=${DISTILL_LOSS_TYPE:-"cosine"}
 distill_feature_source=${DISTILL_FEATURE_SOURCE:-"visual"}
 distill_teacher_image_size=${DISTILL_TEACHER_IMAGE_SIZE:-384}
@@ -55,14 +62,18 @@ args="
     --model_name_or_path "${llm}" \
     --dataset_use ${datasets} \
     --data_flatten True \
-    --tune_mm_vision True \
-    --tune_mm_mlp True \
-    --tune_mm_llm True \
+    --tune_mm_vision ${tune_mm_vision} \
+    --tune_mm_mlp ${tune_mm_mlp} \
+    --tune_mm_llm ${tune_mm_llm} \
+    --vision_tower_lr ${vision_tower_lr} \
+    --mm_projector_lr ${mm_projector_lr} \
     --using_cot True \
     --distill_enable ${distill_enable} \
     --distill_teacher_arch ${distill_teacher_arch} \
     --distill_teacher_ckpt ${distill_teacher_ckpt} \
     --distill_weight ${distill_weight} \
+    --distill_start_steps ${distill_start_steps} \
+    --distill_warmup_steps ${distill_warmup_steps} \
     --distill_loss_type ${distill_loss_type} \
     --distill_feature_source ${distill_feature_source} \
     --distill_teacher_image_size ${distill_teacher_image_size} \

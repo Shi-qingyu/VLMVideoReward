@@ -367,11 +367,18 @@ class VJepa2TeacherEncoder:
     def _load_video_clip(
         self,
         video_path: str,
+        video_metadata: Optional[dict[str, Any]] = None,
         target_temporal_tokens: Optional[int] = None,
     ) -> torch.Tensor:
         frames = None
         video_error: Optional[Exception] = None
-        if target_temporal_tokens is None:
+        frame_indices = None
+        if video_metadata is not None:
+            frame_indices = video_metadata.get("frames_indices")
+
+        if frame_indices is not None:
+            desired_frames = len(frame_indices)
+        elif target_temporal_tokens is None:
             desired_frames = self.num_video_frames
         else:
             desired_frames = int(target_temporal_tokens) * self.teacher_tubelet_size
@@ -380,7 +387,10 @@ class VJepa2TeacherEncoder:
             from decord import VideoReader, cpu
 
             reader = VideoReader(video_path, ctx=cpu(0))
-            indices = self._sample_frame_indices(len(reader), desired_frames)
+            if frame_indices is not None:
+                indices = torch.as_tensor(frame_indices, dtype=torch.long)
+            else:
+                indices = self._sample_frame_indices(len(reader), desired_frames)
             frames = torch.from_numpy(reader.get_batch(indices.tolist()).asnumpy())
         except Exception as exc:
             video_error = exc
@@ -390,7 +400,10 @@ class VJepa2TeacherEncoder:
                 from torchvision.io import read_video
 
                 video, _, _ = read_video(video_path, pts_unit="sec")
-                indices = self._sample_frame_indices(int(video.shape[0]), desired_frames)
+                if frame_indices is not None:
+                    indices = torch.as_tensor(frame_indices, dtype=torch.long)
+                else:
+                    indices = self._sample_frame_indices(int(video.shape[0]), desired_frames)
                 frames = video.index_select(0, indices)
             except Exception as exc:
                 raise RuntimeError(
@@ -427,10 +440,16 @@ class VJepa2TeacherEncoder:
         video_paths: Sequence[str],
         device: torch.device,
         dtype: torch.dtype,
+        video_metadatas: Optional[Sequence[dict[str, Any]]] = None,
         target_temporal_tokens: Optional[Sequence[int]] = None,
     ) -> list[torch.Tensor]:
         if not video_paths:
             return []
+        if video_metadatas is not None and len(video_paths) != len(video_metadatas):
+            raise ValueError(
+                "video_metadatas length must match video_paths length: "
+                f"{len(video_metadatas)} vs {len(video_paths)}"
+            )
         if target_temporal_tokens is not None and len(video_paths) != len(target_temporal_tokens):
             raise ValueError(
                 "target_temporal_tokens length must match video_paths length: "
@@ -443,9 +462,20 @@ class VJepa2TeacherEncoder:
             if target_temporal_tokens is not None
             else [None] * len(video_paths)
         )
-        for video_path, temporal_target in zip(video_paths, temporal_targets, strict=False):
+        metadata_items = (
+            list(video_metadatas)
+            if video_metadatas is not None
+            else [None] * len(video_paths)
+        )
+        for video_path, video_metadata, temporal_target in zip(
+            video_paths,
+            metadata_items,
+            temporal_targets,
+            strict=False,
+        ):
             clip = self._load_video_clip(
                 video_path,
+                video_metadata=video_metadata,
                 target_temporal_tokens=temporal_target,
             ).to(device=device, dtype=dtype)
             encoded = self.teacher(clip)

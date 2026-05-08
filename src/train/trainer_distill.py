@@ -61,6 +61,23 @@ class Qwen3VLDistillationTrainer(Trainer):
         image_processor = getattr(self.processing_class, "image_processor", None)
         self.visual_merge_size = int(getattr(image_processor, "merge_size", 2))
 
+    def _current_distill_weight(self) -> float:
+        base_weight = float(getattr(self.args, "distill_weight", 0.0))
+        if base_weight <= 0.0:
+            return 0.0
+
+        start_steps = max(int(getattr(self.args, "distill_start_steps", 0)), 0)
+        warmup_steps = max(int(getattr(self.args, "distill_warmup_steps", 0)), 0)
+        step = max(int(getattr(self.state, "global_step", 0)), 0)
+
+        if step < start_steps:
+            return 0.0
+        if warmup_steps == 0:
+            return base_weight
+
+        progress = min(max((step - start_steps + 1) / warmup_steps, 0.0), 1.0)
+        return base_weight * progress
+
     def compute_loss(
         self,
         model,
@@ -70,10 +87,12 @@ class Qwen3VLDistillationTrainer(Trainer):
     ):
         distill_image_paths = inputs.pop("distill_image_paths", None)
         distill_video_paths = inputs.pop("distill_video_paths", None)
+        distill_video_metadatas = inputs.pop("distill_video_metadatas", None)
+        distill_weight = self._current_distill_weight()
 
         captured_visual_outputs = []
         hook_handle = None
-        should_capture = self._should_run_distillation(
+        should_capture = distill_weight > 0.0 and self._should_run_distillation(
             inputs=inputs,
             distill_image_paths=distill_image_paths,
             distill_video_paths=distill_video_paths,
@@ -105,10 +124,11 @@ class Qwen3VLDistillationTrainer(Trainer):
                 captured_visual_outputs=captured_visual_outputs,
                 distill_image_paths=distill_image_paths,
                 distill_video_paths=distill_video_paths,
+                distill_video_metadatas=distill_video_metadatas,
             )
             if distill_loss is not None:
                 self._last_distill_loss = distill_loss.detach()
-                total_loss = total_loss + getattr(self.args, "distill_weight", 1.0) * distill_loss
+                total_loss = total_loss + distill_weight * distill_loss
 
         if (
             self.model.training
@@ -116,6 +136,8 @@ class Qwen3VLDistillationTrainer(Trainer):
             and self.state.global_step % max(int(getattr(self.args, "logging_steps", 1)), 1) == 0
         ):
             logs = {"task_loss": float(self._last_task_loss.cpu())}
+            if self.distill_enabled:
+                logs["distill_weight"] = distill_weight
             if self._last_distill_loss is not None:
                 logs["distill_loss"] = float(self._last_distill_loss.cpu())
             self.log(logs)
@@ -147,6 +169,7 @@ class Qwen3VLDistillationTrainer(Trainer):
         captured_visual_outputs: list[Any],
         distill_image_paths,
         distill_video_paths,
+        distill_video_metadatas,
     ) -> Optional[torch.Tensor]:
         if self.teacher_encoder is None:
             return None
@@ -208,6 +231,7 @@ class Qwen3VLDistillationTrainer(Trainer):
             and getattr(self.args, "distill_use_videos", True)
         ):
             video_paths = _flatten_path_batches(distill_video_paths)
+            video_metadatas = _flatten_path_batches(distill_video_metadatas)
             student_video_tokens = select_student_features(video_result, feature_source)
             student_video_groups = split_visual_tokens_with_shapes(
                 student_video_tokens,
@@ -219,6 +243,7 @@ class Qwen3VLDistillationTrainer(Trainer):
                 video_paths=video_paths,
                 device=device,
                 dtype=teacher_dtype,
+                video_metadatas=video_metadatas if video_metadatas else None,
                 target_temporal_tokens=target_temporal_tokens,
             )
             losses.extend(

@@ -134,6 +134,11 @@ def train(attn_implementation="flash_attention_2"):
         (ModelArguments, DataArguments, SFTArguments)
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    setattr(
+        data_args,
+        "distill_share_student_video_sampling",
+        bool(getattr(training_args, "distill_enable", False)),
+    )
 
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
@@ -156,7 +161,7 @@ def train(attn_implementation="flash_attention_2"):
     )
 
     num_added = processor.tokenizer.add_tokens(
-        ["<answer>", "</answer>", "<box>", "</box>", "<t>", "</t>"]
+        ["<think>", "</think>", "<answer>", "</answer>", "<box>", "</box>", "<t>", "</t>"]
     )
     if num_added > 0:
         model.resize_token_embeddings(len(processor.tokenizer))
@@ -198,6 +203,12 @@ def train(attn_implementation="flash_attention_2"):
         logging.warning(
             "Visual distillation is enabled while tune_mm_vision=False. "
             "This will train the distillation projector, but the Qwen vision tower itself stays frozen."
+        )
+    if training_args.distill_enable and training_args.tune_mm_llm:
+        logging.warning(
+            "Visual distillation is enabled while tune_mm_llm=True. "
+            "This often destabilizes generation because the language model moves together with the vision tower. "
+            "Prefer freezing the LLM and only tuning the vision tower plus merger/projectors first."
         )
     
     data_module = make_supervised_data_module(processor, data_args=data_args)

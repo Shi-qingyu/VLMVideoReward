@@ -51,6 +51,8 @@ class SFTArguments(transformers.TrainingArguments):
     distill_teacher_arch: str = field(default="vjepa2_1_vit_large_384")
     distill_teacher_ckpt: str = field(default="vjepa2_1_vitl_dist_vitG_384.pt")
     distill_weight: float = field(default=1.0)
+    distill_start_steps: int = field(default=0)
+    distill_warmup_steps: int = field(default=0)
     distill_loss_type: str = field(default="mse")
     distill_feature_source: str = field(default="visual")
     distill_normalize_features: bool = field(default=True)

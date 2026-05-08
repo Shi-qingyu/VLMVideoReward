@@ -247,7 +247,9 @@ def create_optimizer(self):
         decay_parameters = [name for name in decay_parameters if "bias" not in name]
         if self.args.mm_projector_lr is not None and self.args.mm_projector_lr != 0:
             projector_parameters = [
-                name for name, _ in opt_model.named_parameters() if "merger" in name
+                name
+                for name, _ in opt_model.named_parameters()
+                if "merger" in name or "visual_distill_projector" in name
             ]
             if self.args.vision_tower_lr is not None and self.args.vision_tower_lr != 0:
                 vision_tower_parameters = [
