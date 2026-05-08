@@ -1,7 +1,7 @@
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
-model_path = "output/qwen3vl-2b-baseline-1e-bs4-ga4-t-merged-tunevit"
+model_path = "output/qwen3vl-2b-vjepa21-distill-bs4-ga4-t-merged/checkpoint-100"
 # default: Load the model on the available device(s)
 model = AutoModelForImageTextToText.from_pretrained(
     model_path, 
