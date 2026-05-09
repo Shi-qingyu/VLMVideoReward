@@ -17,12 +17,12 @@ deepspeed=${DEEPSPEED_CONFIG:-"${SCRIPT_DIR}/zero3.json"}
 llm=${LLM_MODEL:-"Qwen/Qwen3-VL-2B-Instruct"}
 
 # Training hyperparameters
-lr=${LR:-1e-5}
+lr=${LR:-5e-5}
 batch_size=${BATCH_SIZE:-4}
 grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 vision_tower_lr=${VISION_TOWER_LR:-5e-6}
 mm_projector_lr=${MM_PROJECTOR_LR:-5e-5}
-tune_mm_llm=${TUNE_MM_LLM:-False}
+tune_mm_llm=${TUNE_MM_LLM:-True}
 tune_mm_mlp=${TUNE_MM_MLP:-True}
 tune_mm_vision=${TUNE_MM_VISION:-True}
 
@@ -36,9 +36,9 @@ datasets=${DATASETS:-"videoreward_t_merged"}
 distill_enable=${DISTILL_ENABLE:-true}
 distill_teacher_arch=${DISTILL_TEACHER_ARCH:-"vjepa2_1_vit_large_384"}
 distill_teacher_ckpt=${DISTILL_TEACHER_CKPT:-"${REPO_ROOT}/vjepa2_1_vitl_dist_vitG_384.pt"}
-distill_weight=${DISTILL_WEIGHT:-0.05}
-distill_start_steps=${DISTILL_START_STEPS:-100}
-distill_warmup_steps=${DISTILL_WARMUP_STEPS:-400}
+distill_weight=${DISTILL_WEIGHT:-1.0}
+distill_start_steps=${DISTILL_START_STEPS:-0}
+distill_warmup_steps=${DISTILL_WARMUP_STEPS:-100}
 distill_loss_type=${DISTILL_LOSS_TYPE:-"cosine"}
 distill_feature_source=${DISTILL_FEATURE_SOURCE:-"visual"}
 distill_teacher_image_size=${DISTILL_TEACHER_IMAGE_SIZE:-384}
@@ -47,7 +47,7 @@ distill_use_images=${DISTILL_USE_IMAGES:-true}
 distill_use_videos=${DISTILL_USE_VIDEOS:-true}
 
 # Output configuration
-run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
+run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-weight${distill_weight}-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
 output_dir=${OUTPUT_DIR:-"${REPO_ROOT}/output/${run_name}"}
 
 if [[ "${distill_enable}" == "true" && ! -f "${distill_teacher_ckpt}" ]]; then
