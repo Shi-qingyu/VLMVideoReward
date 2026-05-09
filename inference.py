@@ -1,14 +1,16 @@
 from transformers import AutoModelForImageTextToText, AutoProcessor
+from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 model_path = "output/qwen3vl-2b-vjepa21-distill-weight1.0-bs4-ga4-t-merged"
+inference_model_path = prepare_inference_model_dir(model_path)
 # default: Load the model on the available device(s)
 model = AutoModelForImageTextToText.from_pretrained(
-    model_path, 
+    inference_model_path,
     dtype="auto", 
     device_map="auto"
 )
-processor = AutoProcessor.from_pretrained(model_path)
+processor = AutoProcessor.from_pretrained(inference_model_path)
 
 question = (
     "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\n"

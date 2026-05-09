@@ -36,6 +36,10 @@ from src.train.argument import (
     DataArguments,
     SFTArguments,
 )
+from src.train.checkpoint_utils import (
+    filter_state_dict_for_inference,
+    strip_distill_only_weights_in_dir,
+)
 from transformers import AutoProcessor, Trainer
 
 import contextlib
@@ -93,11 +97,13 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     if trainer.deepspeed:
         torch.cuda.synchronize()
         trainer.save_model(output_dir)
+        strip_distill_only_weights_in_dir(output_dir)
         return
 
     state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
-        cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
+        inference_state_dict = filter_state_dict_for_inference(state_dict)
+        cpu_state_dict = {key: value.cpu() for key, value in inference_state_dict.items()}
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
 

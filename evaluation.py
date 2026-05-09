@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 import multiprocessing as mp
 
 from src.dataset.data_processor import make_rl_data_module
+from src.train.checkpoint_utils import prepare_inference_model_dir
 from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 
@@ -220,6 +221,7 @@ def run_eval(args):
     model_name = "-".join(args.model_path.split("/")[1:])
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, f"{model_name}.json")
+    inference_model_path = prepare_inference_model_dir(args.model_path)
 
     results = []
     if os.path.exists(output_path):
@@ -235,7 +237,7 @@ def run_eval(args):
         return
 
     llm = LLM(
-        model=args.model_path,
+        model=inference_model_path,
         trust_remote_code=True,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
@@ -248,7 +250,7 @@ def run_eval(args):
         max_tokens=args.max_new_tokens,
     )
 
-    processor = AutoProcessor.from_pretrained(args.model_path)
+    processor = AutoProcessor.from_pretrained(inference_model_path)
     data_module = make_rl_data_module(processor=processor, data_args=args)
     dataloader = DataLoader(
         data_module["train_dataset"],
