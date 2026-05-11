@@ -30,7 +30,7 @@ class Qwen3VLDistillationTrainer(Trainer):
         self._last_distill_loss: Optional[torch.Tensor] = None
         self._last_task_loss: Optional[torch.Tensor] = None
         self._last_logged_step = -1
-        self._distill_visualized = False
+        self._last_distill_visualize_step: Optional[int] = None
 
         if not self.distill_enabled:
             self.teacher_encoder = None
@@ -196,14 +196,23 @@ class Qwen3VLDistillationTrainer(Trainer):
         inputs: dict[str, Any],
         distill_video_paths,
     ) -> bool:
-        if self._distill_visualized:
-            return False
         if not bool(getattr(self.args, "distill_visualize", False)):
             return False
         if not self.distill_enabled:
             return False
         if not self.is_world_process_zero():
             return False
+        step = int(getattr(self.state, "global_step", 0))
+        if self._last_distill_visualize_step == step:
+            return False
+
+        visualize_steps = int(getattr(self.args, "distill_visualize_steps", 0))
+        if visualize_steps <= 0:
+            if self._last_distill_visualize_step is not None:
+                return False
+        elif step % visualize_steps != 0:
+            return False
+
         return bool(
             inputs.get("pixel_values_videos") is not None
             and inputs.get("video_grid_thw") is not None
@@ -243,10 +252,12 @@ class Qwen3VLDistillationTrainer(Trainer):
         if not output_dir:
             output_dir = str(Path(self.args.output_dir) / "distill_visualizations")
 
+        step = int(getattr(self.state, "global_step", 0))
+        self._last_distill_visualize_step = step
         try:
             saved_paths = save_qwen_visual_pca_batch(
                 output_dir=output_dir,
-                step=int(getattr(self.state, "global_step", 0)),
+                step=step,
                 video_result=video_result,
                 video_grid_thw=inputs.get("video_grid_thw"),
                 distill_video_paths=distill_video_paths,
@@ -257,14 +268,13 @@ class Qwen3VLDistillationTrainer(Trainer):
                 max_frames=int(getattr(self.args, "distill_visualize_max_frames", 0)),
             )
         except Exception:
-            self._distill_visualized = True
             logger.exception("Failed to save Qwen3VL visual PCA distillation preview.")
             return
 
         if saved_paths:
-            self._distill_visualized = True
             logger.info(
-                "Saved Qwen3VL visual PCA distillation preview to %s",
+                "Saved Qwen3VL visual PCA distillation preview for step %s to %s",
+                step,
                 output_dir,
             )
 

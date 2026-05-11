@@ -46,6 +46,7 @@ distill_teacher_num_video_frames=${DISTILL_TEACHER_NUM_VIDEO_FRAMES:-20}
 distill_use_images=${DISTILL_USE_IMAGES:-true}
 distill_use_videos=${DISTILL_USE_VIDEOS:-true}
 distill_visualize=${DISTILL_VISUALIZE:-true}
+distill_visualize_steps=${DISTILL_VISUALIZE_STEPS:-100}
 distill_visualize_max_items=${DISTILL_VISUALIZE_MAX_ITEMS:-1}
 distill_visualize_max_frames=${DISTILL_VISUALIZE_MAX_FRAMES:-0}
 
@@ -84,6 +85,7 @@ args="
     --distill_use_images ${distill_use_images} \
     --distill_use_videos ${distill_use_videos} \
     --distill_visualize ${distill_visualize} \
+    --distill_visualize_steps ${distill_visualize_steps} \
     --distill_visualize_max_items ${distill_visualize_max_items} \
     --distill_visualize_max_frames ${distill_visualize_max_frames} \
     --bf16 \
