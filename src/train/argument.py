@@ -64,6 +64,10 @@ class SFTArguments(transformers.TrainingArguments):
     distill_teacher_num_video_frames: int = field(default=16)
     distill_use_images: bool = field(default=True)
     distill_use_videos: bool = field(default=True)
+    distill_visualize: bool = field(default=False)
+    distill_visualize_dir: Optional[str] = field(default=None)
+    distill_visualize_max_items: int = field(default=1)
+    distill_visualize_max_frames: int = field(default=0)
 
 
 @dataclass

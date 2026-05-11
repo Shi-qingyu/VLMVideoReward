@@ -45,6 +45,9 @@ distill_teacher_image_size=${DISTILL_TEACHER_IMAGE_SIZE:-384}
 distill_teacher_num_video_frames=${DISTILL_TEACHER_NUM_VIDEO_FRAMES:-20}
 distill_use_images=${DISTILL_USE_IMAGES:-true}
 distill_use_videos=${DISTILL_USE_VIDEOS:-true}
+distill_visualize=${DISTILL_VISUALIZE:-true}
+distill_visualize_max_items=${DISTILL_VISUALIZE_MAX_ITEMS:-1}
+distill_visualize_max_frames=${DISTILL_VISUALIZE_MAX_FRAMES:-0}
 
 # Output configuration
 run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-weight${distill_weight}-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
@@ -80,6 +83,9 @@ args="
     --distill_teacher_num_video_frames ${distill_teacher_num_video_frames} \
     --distill_use_images ${distill_use_images} \
     --distill_use_videos ${distill_use_videos} \
+    --distill_visualize ${distill_visualize} \
+    --distill_visualize_max_items ${distill_visualize_max_items} \
+    --distill_visualize_max_frames ${distill_visualize_max_frames} \
     --bf16 \
     --output_dir ${output_dir} \
     --num_train_epochs 1 \

@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import sys
@@ -8,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,347 @@ def reshape_tokens_to_grid(
             f"Cannot reshape tokens of shape {tuple(tokens.shape)} into grid {shape}."
         )
     return tokens.view(t, h, w, tokens.shape[-1])
+
+
+def _pil_bilinear_resample() -> int:
+    return getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+
+
+def _pil_nearest_resample() -> int:
+    return getattr(getattr(Image, "Resampling", Image), "NEAREST")
+
+
+def _select_evenly_spaced_indices(length: int, max_items: int) -> list[int]:
+    length = int(length)
+    max_items = int(max_items)
+    if length <= 0:
+        return []
+    if max_items <= 0 or length <= max_items:
+        return list(range(length))
+    raw_indices = np.linspace(0, length - 1, num=max_items)
+    indices = []
+    seen = set()
+    for raw_index in raw_indices:
+        index = int(round(float(raw_index)))
+        if index not in seen:
+            indices.append(index)
+            seen.add(index)
+    return indices
+
+
+def _project_features_to_pca_rgb(features: torch.Tensor) -> torch.Tensor:
+    features = torch.nan_to_num(features.detach().float().cpu())
+    if features.ndim != 2:
+        raise ValueError(f"Expected 2D features for PCA, got {tuple(features.shape)}")
+
+    num_tokens, feature_dim = features.shape
+    if num_tokens == 0 or feature_dim == 0:
+        return torch.zeros(num_tokens, 3, dtype=torch.float32)
+
+    centered = features - features.mean(dim=0, keepdim=True)
+    component_count = min(3, num_tokens, feature_dim)
+    if component_count <= 0 or centered.abs().max().item() == 0.0:
+        projected = torch.zeros(num_tokens, component_count, dtype=torch.float32)
+    else:
+        try:
+            _, _, basis = torch.pca_lowrank(
+                centered,
+                q=component_count,
+                center=False,
+            )
+            projected = centered @ basis[:, :component_count]
+        except (AttributeError, RuntimeError):
+            _, _, vh = torch.linalg.svd(centered, full_matrices=False)
+            projected = centered @ vh[:component_count].T
+
+    if projected.shape[-1] < 3:
+        projected = F.pad(projected, (0, 3 - projected.shape[-1]))
+
+    channels = []
+    for channel_index in range(3):
+        channel = projected[:, channel_index]
+        if channel.numel() > 16:
+            lo = torch.quantile(channel, 0.01)
+            hi = torch.quantile(channel, 0.99)
+        else:
+            lo = channel.min()
+            hi = channel.max()
+        if torch.isclose(hi, lo):
+            channels.append(torch.zeros_like(channel))
+        else:
+            channels.append(((channel - lo) / (hi - lo)).clamp(0, 1))
+    return torch.stack(channels, dim=-1)
+
+
+def _tokens_to_pca_frame_images(
+    tokens: torch.Tensor,
+    shape: Tuple[int, int, int],
+    max_frames: int,
+    tile_size: int,
+) -> tuple[list[Image.Image], list[int]]:
+    grid = reshape_tokens_to_grid(tokens.detach().float().cpu(), shape)
+    frame_indices = _select_evenly_spaced_indices(shape[0], max_frames)
+    if not frame_indices:
+        return [], []
+
+    selected = grid[frame_indices]
+    rgb = _project_features_to_pca_rgb(selected.reshape(-1, selected.shape[-1]))
+    rgb = rgb.view(len(frame_indices), shape[1], shape[2], 3)
+
+    images = []
+    for frame_rgb in rgb:
+        array = (frame_rgb.numpy() * 255.0).round().clip(0, 255).astype(np.uint8)
+        image = Image.fromarray(array, mode="RGB")
+        image = image.resize((tile_size, tile_size), _pil_nearest_resample())
+        images.append(image)
+    return images, frame_indices
+
+
+def _metadata_get(metadata: Optional[Any], key: str) -> Optional[Any]:
+    if metadata is None:
+        return None
+    if isinstance(metadata, dict):
+        return metadata.get(key)
+    return getattr(metadata, key, None)
+
+
+def _metadata_frame_indices(metadata: Optional[Any]) -> Optional[list[int]]:
+    for key in ("frames_indices", "frame_indices", "indices"):
+        value = _metadata_get(metadata, key)
+        if value is None:
+            continue
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().tolist()
+        elif isinstance(value, np.ndarray):
+            value = value.tolist()
+        return [int(index) for index in value]
+    return None
+
+
+def _load_raw_video_frame_images(
+    video_path: str,
+    video_metadata: Optional[Any],
+    fallback_frame_count: int,
+    max_frames: int,
+) -> tuple[list[Image.Image], list[str]]:
+    frame_indices = _metadata_frame_indices(video_metadata)
+    selected_indices = frame_indices
+    if selected_indices is not None and max_frames > 0:
+        selected_indices = [
+            selected_indices[index]
+            for index in _select_evenly_spaced_indices(len(selected_indices), max_frames)
+        ]
+
+    frames = None
+    video_error: Optional[Exception] = None
+    try:
+        from decord import VideoReader, cpu
+
+        reader = VideoReader(video_path, ctx=cpu(0))
+        if selected_indices is None:
+            sample_count = max_frames if max_frames > 0 else max(int(fallback_frame_count), 1)
+            selected_indices = _select_evenly_spaced_indices(len(reader), sample_count)
+        frames = reader.get_batch(selected_indices).asnumpy()
+    except Exception as exc:
+        video_error = exc
+
+    if frames is None:
+        try:
+            from torchvision.io import read_video
+
+            video, _, _ = read_video(video_path, pts_unit="sec")
+            if selected_indices is None:
+                sample_count = max_frames if max_frames > 0 else max(int(fallback_frame_count), 1)
+                selected_indices = _select_evenly_spaced_indices(
+                    int(video.shape[0]),
+                    sample_count,
+                )
+            index_tensor = torch.as_tensor(selected_indices, dtype=torch.long)
+            frames = video.index_select(0, index_tensor).cpu().numpy()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load raw video frames for visualization: {video_path}"
+            ) from (video_error or exc)
+
+    images = [Image.fromarray(frame).convert("RGB") for frame in frames]
+    labels = [f"raw f={index}" for index in selected_indices or range(len(images))]
+    return images, labels
+
+
+def _make_tiled_grid(
+    images: Sequence[Image.Image],
+    labels: Optional[Sequence[str]] = None,
+    tile_size: int = 224,
+    max_columns: int = 5,
+) -> Image.Image:
+    if not images:
+        return Image.new("RGB", (tile_size, tile_size), "white")
+
+    label_height = 20 if labels else 0
+    columns = min(max_columns, len(images))
+    rows = int(math.ceil(len(images) / columns))
+    canvas = Image.new(
+        "RGB",
+        (columns * tile_size, rows * (tile_size + label_height)),
+        "white",
+    )
+    draw = ImageDraw.Draw(canvas)
+
+    for index, image in enumerate(images):
+        row = index // columns
+        col = index % columns
+        x = col * tile_size
+        y = row * (tile_size + label_height)
+
+        cell = Image.new("RGB", (tile_size, tile_size), "white")
+        resized = ImageOps.contain(
+            image.convert("RGB"),
+            (tile_size, tile_size),
+            _pil_bilinear_resample(),
+        )
+        paste_x = (tile_size - resized.width) // 2
+        paste_y = (tile_size - resized.height) // 2
+        cell.paste(resized, (paste_x, paste_y))
+        canvas.paste(cell, (x, y))
+        if labels:
+            draw.text((x + 4, y + tile_size + 3), str(labels[index]), fill=(20, 20, 20))
+
+    return canvas
+
+
+def _stack_labeled_rows(rows: Sequence[tuple[str, Image.Image]]) -> Image.Image:
+    if not rows:
+        return Image.new("RGB", (224, 224), "white")
+
+    title_height = 26
+    width = max(image.width for _, image in rows)
+    height = sum(title_height + image.height for _, image in rows)
+    canvas = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    y = 0
+    for title, image in rows:
+        draw.text((8, y + 6), title, fill=(20, 20, 20))
+        y += title_height
+        canvas.paste(image, (0, y))
+        y += image.height
+    return canvas
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def save_qwen_visual_pca_batch(
+    output_dir: str,
+    step: int,
+    video_result: Any,
+    video_grid_thw: Optional[torch.Tensor],
+    distill_video_paths,
+    distill_video_metadatas,
+    feature_source: str,
+    merge_size: int,
+    max_items: int = 1,
+    max_frames: int = 0,
+    tile_size: int = 224,
+) -> list[Path]:
+    if video_result is None or video_grid_thw is None:
+        return []
+
+    video_paths = _flatten_path_batches(distill_video_paths)
+    if not video_paths:
+        return []
+    video_metadatas = _flatten_path_batches(distill_video_metadatas)
+
+    student_video_tokens = select_student_features(video_result, feature_source)
+    student_video_groups = split_visual_tokens_with_shapes(
+        student_video_tokens,
+        video_grid_thw,
+        merge_size,
+    )
+
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    item_count = min(max(int(max_items), 1), len(video_paths), len(student_video_groups))
+
+    for item_index in range(item_count):
+        video_path = str(video_paths[item_index])
+        video_metadata = (
+            video_metadatas[item_index]
+            if item_index < len(video_metadatas)
+            else None
+        )
+        student_tokens, student_shape = student_video_groups[item_index]
+        item_dir = output_root / f"step_{int(step):06d}_video_{item_index:02d}"
+        item_dir.mkdir(parents=True, exist_ok=True)
+
+        pca_images, pca_frame_indices = _tokens_to_pca_frame_images(
+            student_tokens,
+            student_shape,
+            max_frames=max_frames,
+            tile_size=tile_size,
+        )
+        if not pca_images:
+            continue
+
+        raw_images, raw_labels = _load_raw_video_frame_images(
+            video_path,
+            video_metadata,
+            fallback_frame_count=student_shape[0],
+            max_frames=max_frames,
+        )
+
+        pca_grid = _make_tiled_grid(
+            pca_images,
+            labels=[f"visual t={index}" for index in pca_frame_indices],
+            tile_size=tile_size,
+        )
+        raw_grid = _make_tiled_grid(raw_images, labels=raw_labels, tile_size=tile_size)
+        combined = _stack_labeled_rows(
+            (
+                ("original sampled video frames", raw_grid),
+                ("Qwen3VL visual tokens PCA", pca_grid),
+            )
+        )
+
+        raw_path = item_dir / "raw_frames.jpg"
+        pca_path = item_dir / "qwen_visual_pca.jpg"
+        combined_path = item_dir / "raw_vs_qwen_visual_pca.jpg"
+        metadata_path = item_dir / "metadata.json"
+
+        raw_grid.save(raw_path, quality=95)
+        pca_grid.save(pca_path, quality=95)
+        combined.save(combined_path, quality=95)
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "video_path": video_path,
+                    "student_shape_thw": list(student_shape),
+                    "feature_source": feature_source,
+                    "visual_frame_indices": pca_frame_indices,
+                    "raw_frame_count": len(raw_images),
+                    "video_metadata": _jsonable(video_metadata),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        saved_paths.extend([raw_path, pca_path, combined_path, metadata_path])
+
+    return saved_paths
 
 
 def infer_teacher_grid_shape(

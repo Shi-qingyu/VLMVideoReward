@@ -1,3 +1,5 @@
+import logging
+from pathlib import Path
 from typing import Any, Optional
 
 import torch
@@ -11,10 +13,13 @@ from src.train.distill_vjepa import (
     compute_feature_loss,
     get_distillation_projector,
     select_student_features,
+    save_qwen_visual_pca_batch,
     split_visual_tokens_with_shapes,
     _find_visual_module,
     _flatten_path_batches,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Qwen3VLDistillationTrainer(Trainer):
@@ -25,6 +30,7 @@ class Qwen3VLDistillationTrainer(Trainer):
         self._last_distill_loss: Optional[torch.Tensor] = None
         self._last_task_loss: Optional[torch.Tensor] = None
         self._last_logged_step = -1
+        self._distill_visualized = False
 
         if not self.distill_enabled:
             self.teacher_encoder = None
@@ -89,14 +95,20 @@ class Qwen3VLDistillationTrainer(Trainer):
         distill_video_paths = inputs.pop("distill_video_paths", None)
         distill_video_metadatas = inputs.pop("distill_video_metadatas", None)
         distill_weight = self._current_distill_weight()
-
-        captured_visual_outputs = []
-        hook_handle = None
-        should_capture = distill_weight > 0.0 and self._should_run_distillation(
+        can_run_distillation = self._should_run_distillation(
             inputs=inputs,
             distill_image_paths=distill_image_paths,
             distill_video_paths=distill_video_paths,
         )
+        should_distill = distill_weight > 0.0 and can_run_distillation
+        should_visualize = self._should_visualize_distill_batch(
+            inputs=inputs,
+            distill_video_paths=distill_video_paths,
+        )
+
+        captured_visual_outputs = []
+        hook_handle = None
+        should_capture = should_distill or should_visualize
 
         if should_capture:
             visual_module = _find_visual_module(model)
@@ -116,12 +128,29 @@ class Qwen3VLDistillationTrainer(Trainer):
         total_loss = task_loss
         self._last_task_loss = task_loss.detach()
         self._last_distill_loss = None
+        image_result = None
+        video_result = None
 
         if should_capture:
+            image_result, video_result = self._split_captured_visual_outputs(
+                inputs=inputs,
+                captured_visual_outputs=captured_visual_outputs,
+            )
+
+        if should_visualize:
+            self._maybe_visualize_distill_batch(
+                video_result=video_result,
+                inputs=inputs,
+                distill_video_paths=distill_video_paths,
+                distill_video_metadatas=distill_video_metadatas,
+            )
+
+        if should_distill:
             distill_loss = self._compute_distill_loss(
                 model=model,
                 inputs=inputs,
-                captured_visual_outputs=captured_visual_outputs,
+                image_result=image_result,
+                video_result=video_result,
                 distill_image_paths=distill_image_paths,
                 distill_video_paths=distill_video_paths,
                 distill_video_metadatas=distill_video_metadatas,
@@ -162,18 +191,30 @@ class Qwen3VLDistillationTrainer(Trainer):
         )
         return has_images or has_videos
 
-    def _compute_distill_loss(
+    def _should_visualize_distill_batch(
         self,
-        model,
+        inputs: dict[str, Any],
+        distill_video_paths,
+    ) -> bool:
+        if self._distill_visualized:
+            return False
+        if not bool(getattr(self.args, "distill_visualize", False)):
+            return False
+        if not self.distill_enabled:
+            return False
+        if not self.is_world_process_zero():
+            return False
+        return bool(
+            inputs.get("pixel_values_videos") is not None
+            and inputs.get("video_grid_thw") is not None
+            and _flatten_path_batches(distill_video_paths)
+        )
+
+    def _split_captured_visual_outputs(
+        self,
         inputs: dict[str, Any],
         captured_visual_outputs: list[Any],
-        distill_image_paths,
-        distill_video_paths,
-        distill_video_metadatas,
-    ) -> Optional[torch.Tensor]:
-        if self.teacher_encoder is None:
-            return None
-
+    ) -> tuple[Optional[Any], Optional[Any]]:
         image_result = None
         video_result = None
         output_index = 0
@@ -186,6 +227,59 @@ class Qwen3VLDistillationTrainer(Trainer):
             if output_index >= len(captured_visual_outputs):
                 raise RuntimeError("Missing captured Qwen video visual outputs for distillation.")
             video_result = captured_visual_outputs[output_index]
+        return image_result, video_result
+
+    def _maybe_visualize_distill_batch(
+        self,
+        video_result: Any,
+        inputs: dict[str, Any],
+        distill_video_paths,
+        distill_video_metadatas,
+    ) -> None:
+        if video_result is None:
+            return
+
+        output_dir = getattr(self.args, "distill_visualize_dir", None)
+        if not output_dir:
+            output_dir = str(Path(self.args.output_dir) / "distill_visualizations")
+
+        try:
+            saved_paths = save_qwen_visual_pca_batch(
+                output_dir=output_dir,
+                step=int(getattr(self.state, "global_step", 0)),
+                video_result=video_result,
+                video_grid_thw=inputs.get("video_grid_thw"),
+                distill_video_paths=distill_video_paths,
+                distill_video_metadatas=distill_video_metadatas,
+                feature_source=getattr(self.args, "distill_feature_source", "visual"),
+                merge_size=self.visual_merge_size,
+                max_items=int(getattr(self.args, "distill_visualize_max_items", 1)),
+                max_frames=int(getattr(self.args, "distill_visualize_max_frames", 0)),
+            )
+        except Exception:
+            self._distill_visualized = True
+            logger.exception("Failed to save Qwen3VL visual PCA distillation preview.")
+            return
+
+        if saved_paths:
+            self._distill_visualized = True
+            logger.info(
+                "Saved Qwen3VL visual PCA distillation preview to %s",
+                output_dir,
+            )
+
+    def _compute_distill_loss(
+        self,
+        model,
+        inputs: dict[str, Any],
+        image_result: Any,
+        video_result: Any,
+        distill_image_paths,
+        distill_video_paths,
+        distill_video_metadatas,
+    ) -> Optional[torch.Tensor]:
+        if self.teacher_encoder is None:
+            return None
 
         feature_source = getattr(self.args, "distill_feature_source", "visual")
         loss_type = getattr(self.args, "distill_loss_type", "mse")
