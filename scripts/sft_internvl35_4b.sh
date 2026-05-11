@@ -9,8 +9,8 @@ deepspeed=${DEEPSPEED_CONFIG:-"./scripts/zero3.json"}
 llm=${LLM_MODEL:-"OpenGVLab/InternVL3_5-4B"}
 
 lr=${LR:-"5e-5"}
-batch_size=${BATCH_SIZE:-2}
-grad_accum_steps=${GRAD_ACCUM_STEPS:-8}
+batch_size=${BATCH_SIZE:-4}
+grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 
 entry_file=${ENTRY_FILE:-"src/train/train_internvl_sft.py"}
 datasets=${DATASETS:-"videoreward_t_merged"}
