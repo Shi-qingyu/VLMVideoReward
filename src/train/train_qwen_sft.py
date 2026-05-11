@@ -29,7 +29,7 @@ sys.path.append(str(project_root))
 from src.train.trainer_sft import replace_qwen3_vl_attention_class
 from src.train.trainer_distill import Qwen3VLDistillationTrainer
 
-from transformers import Qwen3VLForConditionalGeneration
+from transformers import AutoModel, AutoModelForImageTextToText, Qwen3VLForConditionalGeneration
 from src.dataset.data_processor import make_supervised_data_module
 from src.train.argument import (
     ModelArguments,
@@ -108,29 +108,147 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
 
 
-def set_model(model_args, model):
-    if model_args.tune_mm_vision:
-        for n, p in model.model.visual.named_parameters():
-            p.requires_grad = True
-    else:
-        for n, p in model.model.visual.named_parameters():
-            p.requires_grad = False
+def _infer_model_type(model_name_or_path: str) -> str:
+    model_name = model_name_or_path.lower()
+    if "qwen3" in model_name and "vl" in model_name:
+        return "qwen3vl"
+    if "gemma-4" in model_name or "gemma4" in model_name:
+        return "gemma4"
+    if "internvl" in model_name:
+        return "internvl"
+    if "minicpm-v" in model_name or "minicpmv" in model_name:
+        return "minicpmv"
+    raise ValueError(f"Unsupported model type: {model_name_or_path}")
 
-    if model_args.tune_mm_mlp:
-        for n, p in model.model.visual.merger.named_parameters():
-            p.requires_grad = True
-    else:
-        for n, p in model.model.visual.merger.named_parameters():
-            p.requires_grad = False
 
-    if model_args.tune_mm_llm:
-        for n, p in model.model.language_model.named_parameters():
-            p.requires_grad = True
-        model.lm_head.requires_grad = True
+def _get_nested_attr(obj, path: str):
+    current = obj
+    for part in path.split("."):
+        current = getattr(current, part, None)
+        if current is None:
+            return None
+    return current
+
+
+def _set_module_trainable(module, trainable: bool) -> None:
+    if module is None:
+        return
+    for param in module.parameters():
+        param.requires_grad = trainable
+
+
+def _set_modules_trainable(modules, trainable: bool) -> None:
+    for module in modules:
+        _set_module_trainable(module, trainable)
+
+
+def _print_trainable_summary(model) -> None:
+    trainable = 0
+    total = 0
+    for param in model.parameters():
+        count = param.numel()
+        total += count
+        if param.requires_grad:
+            trainable += count
+    ratio = 100 * trainable / total if total else 0
+    print(
+        f"Trainable parameters: {trainable:,} / {total:,} "
+        f"({ratio:.4f}%)"
+    )
+
+
+def set_model(training_args, model, model_type: str):
+    if model_type == "qwen3vl":
+        vision_modules = [_get_nested_attr(model, "model.visual")]
+        projector_modules = [_get_nested_attr(model, "model.visual.merger")]
+        language_modules = [_get_nested_attr(model, "model.language_model")]
+    elif model_type == "gemma4":
+        vision_modules = [
+            _get_nested_attr(model, "model.vision_tower"),
+        ]
+        projector_modules = [
+            _get_nested_attr(model, "model.embed_vision"),
+            _get_nested_attr(model, "model.embed_audio"),
+            _get_nested_attr(model, "model.multi_modal_projector"),
+        ]
+        language_modules = [_get_nested_attr(model, "model.language_model")]
+    elif model_type == "internvl":
+        vision_modules = [_get_nested_attr(model, "vision_model")]
+        projector_modules = [_get_nested_attr(model, "mlp1")]
+        language_modules = [_get_nested_attr(model, "language_model")]
+    elif model_type == "minicpmv":
+        vision_modules = [_get_nested_attr(model, "vpm")]
+        projector_modules = [_get_nested_attr(model, "resampler")]
+        language_modules = [_get_nested_attr(model, "llm")]
     else:
-        for n, p in model.model.language_model.named_parameters():
-            p.requires_grad = False
-        model.lm_head.requires_grad = False
+        raise ValueError(f"Unsupported model_type: {model_type}")
+
+    _set_modules_trainable(vision_modules, training_args.tune_mm_vision)
+    _set_modules_trainable(projector_modules, training_args.tune_mm_mlp)
+    _set_modules_trainable(language_modules, training_args.tune_mm_llm)
+    _set_module_trainable(getattr(model, "lm_head", None), training_args.tune_mm_llm)
+
+
+def _load_model(model_args, training_args, model_type: str, attn_implementation: str):
+    torch_dtype = torch.bfloat16 if training_args.bf16 else None
+    if model_type == "qwen3vl":
+        return Qwen3VLForConditionalGeneration.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            attn_implementation=attn_implementation,
+            torch_dtype=torch_dtype,
+        )
+
+    if model_type == "gemma4":
+        gemma_attn_impl = (
+            "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
+        )
+        return AutoModelForImageTextToText.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            attn_implementation=gemma_attn_impl,
+            torch_dtype=torch_dtype,
+        )
+
+    if model_type in {"internvl", "minicpmv"}:
+        model_kwargs = {
+            "cache_dir": training_args.cache_dir,
+            "trust_remote_code": True,
+            "torch_dtype": torch_dtype,
+            "low_cpu_mem_usage": True,
+        }
+        if model_type == "internvl":
+            model_kwargs["use_flash_attn"] = attn_implementation == "flash_attention_2"
+        else:
+            model_kwargs["attn_implementation"] = (
+                "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
+            )
+        return AutoModel.from_pretrained(
+            model_args.model_name_or_path,
+            **model_kwargs,
+        )
+
+    raise ValueError(f"Unsupported model_type: {model_type}")
+
+
+def _prepare_processor(processor, model, model_type: str) -> None:
+    tokenizer = processor.tokenizer
+    if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
+    if model_type == "internvl" and hasattr(model, "img_context_token_id"):
+        context_token = getattr(tokenizer, "context_image_token", "<IMG_CONTEXT>")
+        model.img_context_token_id = tokenizer.convert_tokens_to_ids(context_token)
+
+    if model_type in {"gemma4", "internvl", "minicpmv"}:
+        return
+
+    num_added = tokenizer.add_tokens(
+        ["<think>", "</think>", "<answer>", "</answer>", "<box>", "</box>", "<t>", "</t>"]
+    )
+    if num_added > 0:
+        model.resize_token_embeddings(len(tokenizer))
 
 
 def train(attn_implementation="flash_attention_2"):
@@ -149,30 +267,44 @@ def train(attn_implementation="flash_attention_2"):
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
 
-    if "qwen3" in model_args.model_name_or_path.lower():
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+    model_type = _infer_model_type(model_args.model_name_or_path)
+    data_args.model_type = model_type
+    setattr(training_args, "model_type", model_type)
+    if model_type in {"gemma4", "internvl", "minicpmv"} and (
+        data_args.data_flatten or data_args.data_packing
+    ):
+        raise ValueError(
+            f"{model_type} training currently uses standard padded batches. "
+            "Set --data_flatten False and --data_packing False."
         )
-        data_args.model_type = "qwen3vl"
-    else:
-        raise ValueError(f"Unsupported model type: {model_args.model_name_or_path}")
+    if model_type == "gemma4" and training_args.distill_enable:
+        raise ValueError(
+            "Gemma4 SFT is supported, but V-JEPA visual distillation is still "
+            "wired to Qwen3VL visual token geometry. Set --distill_enable False."
+        )
+    if model_type in {"internvl", "minicpmv"} and training_args.distill_enable:
+        raise ValueError(
+            f"{model_type} SFT is supported, but V-JEPA visual distillation is "
+            "currently wired to Qwen3VL visual token geometry. Set --distill_enable False."
+        )
+
+    model = _load_model(
+        model_args=model_args,
+        training_args=training_args,
+        model_type=model_type,
+        attn_implementation=attn_implementation,
+    )
 
     print(f'the initlized model is {model_args.model_name_or_path} the class is {model.__class__.__name__}')
     processor = AutoProcessor.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
+        trust_remote_code=model_type in {"internvl", "minicpmv"},
     )
+    processor.tokenizer.model_max_length = training_args.model_max_length
+    _prepare_processor(processor, model, model_type)
 
-    num_added = processor.tokenizer.add_tokens(
-        ["<think>", "</think>", "<answer>", "</answer>", "<box>", "</box>", "<t>", "</t>"]
-    )
-    if num_added > 0:
-        model.resize_token_embeddings(len(processor.tokenizer))
-
-    if data_args.data_flatten or data_args.data_packing:
+    if model_type == "qwen3vl" and (data_args.data_flatten or data_args.data_packing):
         replace_qwen3_vl_attention_class()
     model.config.use_cache = False
 
@@ -200,15 +332,17 @@ def train(attn_implementation="flash_attention_2"):
         )
         model = get_peft_model(model, lora_config)
     else:
-        set_model(training_args, model)
+        set_model(training_args, model, model_type=model_type)
 
         if is_rank0_or_single_process():
-            model.model.print_trainable_parameters()
+            if hasattr(model.model, "print_trainable_parameters"):
+                model.model.print_trainable_parameters()
+            _print_trainable_summary(model)
 
     if training_args.distill_enable and not training_args.tune_mm_vision:
         logging.warning(
             "Visual distillation is enabled while tune_mm_vision=False. "
-            "This will train the distillation projector, but the Qwen vision tower itself stays frozen."
+            "This will train the distillation projector, but the vision tower itself stays frozen."
         )
     if training_args.distill_enable and training_args.tune_mm_llm:
         logging.warning(
