@@ -20,7 +20,7 @@ llm=${LLM_MODEL:-"Qwen/Qwen3-VL-2B-Instruct"}
 lr=${LR:-5e-5}
 batch_size=${BATCH_SIZE:-4}
 grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
-vision_tower_lr=${VISION_TOWER_LR:-5e-6}
+vision_tower_lr=${VISION_TOWER_LR:-5e-5}
 mm_projector_lr=${MM_PROJECTOR_LR:-5e-5}
 tune_mm_llm=${TUNE_MM_LLM:-True}
 tune_mm_mlp=${TUNE_MM_MLP:-True}
@@ -51,7 +51,7 @@ distill_visualize_max_items=${DISTILL_VISUALIZE_MAX_ITEMS:-1}
 distill_visualize_max_frames=${DISTILL_VISUALIZE_MAX_FRAMES:-0}
 
 # Output configuration
-run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-weight${distill_weight}-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
+run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-weight${distill_weight}-vision-lr${vision_tower_lr}-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
 output_dir=${OUTPUT_DIR:-"${REPO_ROOT}/output/${run_name}"}
 
 if [[ "${distill_enable}" == "true" && ! -f "${distill_teacher_ckpt}" ]]; then
