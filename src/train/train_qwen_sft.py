@@ -337,6 +337,10 @@ def _has_complete_response(text: str) -> bool:
     )
 
 
+def _has_chat_end_label(text: str) -> bool:
+    return any(marker in text for marker in ("<|im_end|>", "<end_of_turn>", "</s>"))
+
+
 def _dump_first_train_batch(trainer, tokenizer, training_args) -> None:
     if not bool(getattr(training_args, "dump_first_batch", True)):
         return
@@ -395,6 +399,7 @@ def _dump_first_train_batch(trainer, tokenizer, training_args) -> None:
                 supervised_ids = sample_labels[sample_labels.ne(IGNORE_INDEX)]
                 supervised_text = _decode_token_ids(tokenizer, supervised_ids)
                 complete_response = _has_complete_response(supervised_text)
+                has_chat_end_label = _has_chat_end_label(supervised_text)
                 try:
                     model_max_length = int(getattr(tokenizer, "model_max_length"))
                 except Exception:
@@ -413,6 +418,7 @@ def _dump_first_train_batch(trainer, tokenizer, training_args) -> None:
                             f"{int(sample_mask.sum().item()) >= model_max_length}"
                         ),
                         f"complete_think_answer_labels: {complete_response}",
+                        f"has_chat_end_label: {has_chat_end_label}",
                         f"distill_image_paths: {_batch_index_value(batch.get('distill_image_paths'), index, batch_size)}",
                         f"distill_video_paths: {_batch_index_value(batch.get('distill_video_paths'), index, batch_size)}",
                         "",

@@ -28,6 +28,7 @@ THINK_START_TAG = "<think>"
 THINK_END_TAG = "</think>"
 ANSWER_START_TAG = "<answer>"
 ANSWER_END_TAG = "</answer>"
+CHAT_END_MARKERS = ["<|im_end|>", "<end_of_turn>", "</s>"]
 MEDIA_PLACEHOLDER_PATTERN = re.compile(r"(<image>|<video>)")
 THINK_CONTENT_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -242,7 +243,6 @@ def _assistant_text_spans(text: str) -> List[tuple[int, int]]:
         "<|assistant|>\n",
         "<|assistant|>",
     ]
-    end_markers = ["<|im_end|>", "<end_of_turn>", "</s>"]
     spans: List[tuple[int, int]] = []
     search_pos = 0
 
@@ -253,7 +253,11 @@ def _assistant_text_spans(text: str) -> List[tuple[int, int]]:
         content_start = start_pos + len(marker)
         if content_start < len(text) and text[content_start] == "\n":
             content_start += 1
-        end_pos, end_marker = _find_first_text_marker(text, end_markers, content_start)
+        end_pos, end_marker = _find_first_text_marker(
+            text,
+            CHAT_END_MARKERS,
+            content_start,
+        )
         content_end = end_pos if end_pos != -1 else len(text)
         if content_start < content_end:
             spans.append((content_start, content_end))
@@ -264,6 +268,15 @@ def _assistant_text_spans(text: str) -> List[tuple[int, int]]:
         )
 
     return spans or [(0, len(text))]
+
+
+def _extend_text_label_end(text: str, label_end: int) -> int:
+    while label_end < len(text) and text[label_end].isspace():
+        label_end += 1
+    for marker in sorted(CHAT_END_MARKERS, key=len, reverse=True):
+        if text.startswith(marker, label_end):
+            return label_end + len(marker)
+    return label_end
 
 
 def _response_text_label_spans(text: str) -> List[tuple[int, int]]:
@@ -299,6 +312,7 @@ def _response_text_label_spans(text: str) -> List[tuple[int, int]]:
                     )
                     if answer_end != -1:
                         label_end = answer_end + len(ANSWER_END_TAG)
+                label_end = _extend_text_label_end(text, label_end)
                 label_spans.append((think_start, label_end))
                 pos = label_end
                 continue
@@ -312,6 +326,7 @@ def _response_text_label_spans(text: str) -> List[tuple[int, int]]:
                 pos = answer_start + len(ANSWER_START_TAG)
                 continue
             label_end = answer_end + len(ANSWER_END_TAG)
+            label_end = _extend_text_label_end(text, label_end)
             label_spans.append((answer_start, label_end))
             pos = label_end
 
