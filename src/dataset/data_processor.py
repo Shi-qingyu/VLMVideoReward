@@ -320,7 +320,9 @@ def _prepare_shared_qwen_visual_inputs(
 
 def update_processor_pixels(processor, data_args):
     logger = logging.getLogger(__name__)
-    is_gemma4 = getattr(data_args, "model_type", "") == "gemma4"
+    model_type = getattr(data_args, "model_type", "")
+    is_gemma4 = model_type == "gemma4"
+    is_internvl = model_type == "internvl"
 
     def _update_edge_size(component, shortest_edge: int, longest_edge: int, label: str):
         if not hasattr(component, "size") or not isinstance(component.size, dict):
@@ -352,6 +354,61 @@ def update_processor_pixels(processor, data_args):
             component.size = new_size
             rank0_print(f"Updated {label}.size to {component.size}")
 
+    def _update_optional_int_attr(component, attr_name: str, value, label: str):
+        if value is None or not hasattr(component, attr_name):
+            return
+        setattr(component, attr_name, int(value))
+        rank0_print(f"Updated {label} {attr_name} to {int(value)}")
+
+    def _resolve_internvl_image_size():
+        image_size = getattr(data_args, "internvl_image_size", None)
+        if image_size is None:
+            image_size = getattr(data_args, "internvl_model_image_size", None)
+        if image_size is None:
+            return None
+        return int(image_size)
+
+    def _force_square_size(component, image_size: Optional[int], label: str):
+        if image_size is None or not hasattr(component, "size"):
+            return
+        component.size = {"height": int(image_size), "width": int(image_size)}
+        rank0_print(f"Updated {label}.size to InternVL square size: {component.size}")
+
+    def _update_internvl_image_seq_length(image_size: Optional[int]):
+        if not is_internvl or image_size is None:
+            return
+
+        patch_size = getattr(data_args, "internvl_patch_size", None)
+        downsample_ratio = getattr(data_args, "internvl_downsample_ratio", None)
+        if patch_size is None or downsample_ratio is None:
+            return
+
+        patch_size = int(patch_size)
+        downsample_ratio = float(downsample_ratio)
+        if image_size % patch_size != 0:
+            raise ValueError(
+                f"InternVL image/video size {image_size} must be divisible by "
+                f"vision patch size {patch_size}. Try 448, 392, 336, or 280."
+            )
+
+        grid_size = image_size // patch_size
+        pooled_grid_size = grid_size * downsample_ratio
+        rounded_grid_size = int(round(pooled_grid_size))
+        if abs(pooled_grid_size - rounded_grid_size) > 1e-6:
+            raise ValueError(
+                f"InternVL image/video size {image_size} gives patch grid "
+                f"{grid_size}, which is incompatible with downsample_ratio "
+                f"{downsample_ratio}. Try 448, 392, 336, or 280."
+            )
+
+        image_seq_length = rounded_grid_size * rounded_grid_size
+        if hasattr(processor, "image_seq_length"):
+            processor.image_seq_length = image_seq_length
+            rank0_print(f"Updated InternVL image_seq_length to {image_seq_length}")
+
+    internvl_image_size = _resolve_internvl_image_size()
+    _update_internvl_image_seq_length(internvl_image_size)
+
     # --- Image Processor ---
     ip = getattr(processor, "image_processor", None)
     if ip is None:
@@ -366,6 +423,8 @@ def update_processor_pixels(processor, data_args):
         rank0_print(f"Image size (shortest_edge): {image_size.get('shortest_edge', 'N/A')}")
         rank0_print(f"Image size (longest_edge):  {image_size.get('longest_edge', 'N/A')}")
     rank0_print(f"Image max_soft_tokens: {getattr(ip, 'max_soft_tokens', 'N/A')}")
+    rank0_print(f"Image min_patches: {getattr(ip, 'min_patches', 'N/A')}")
+    rank0_print(f"Image max_patches: {getattr(ip, 'max_patches', 'N/A')}")
 
     if not is_gemma4 and hasattr(ip, "min_pixels") and hasattr(ip, "max_pixels"):
         ip.min_pixels = data_args.min_pixels
@@ -381,6 +440,9 @@ def update_processor_pixels(processor, data_args):
             label="image_processor",
         )
 
+    if is_internvl:
+        _force_square_size(ip, internvl_image_size, "image_processor")
+
     gemma4_max_soft_tokens = getattr(data_args, "gemma4_max_soft_tokens", None)
     if gemma4_max_soft_tokens is not None and hasattr(ip, "max_soft_tokens"):
         ip.max_soft_tokens = int(gemma4_max_soft_tokens)
@@ -388,13 +450,30 @@ def update_processor_pixels(processor, data_args):
             f"Updated image_processor max_soft_tokens to {gemma4_max_soft_tokens}"
         )
 
+    if is_internvl:
+        _update_optional_int_attr(
+            ip,
+            "min_patches",
+            getattr(data_args, "internvl_min_patches", None),
+            "image_processor",
+        )
+        _update_optional_int_attr(
+            ip,
+            "max_patches",
+            getattr(data_args, "internvl_max_patches", None),
+            "image_processor",
+        )
+
     rank0_print("=== AFTER IMAGE PROCESSOR PARAMETERS ===")
     rank0_print(f"Image min_pixels: {getattr(ip, 'min_pixels', 'N/A')}")
     rank0_print(f"Image max_pixels: {getattr(ip, 'max_pixels', 'N/A')}")
+    rank0_print(f"Image size: {getattr(ip, 'size', 'N/A')}")
     if hasattr(ip, "size") and isinstance(ip.size, dict):
         rank0_print(f"Image size (shortest_edge): {ip.size.get('shortest_edge', 'N/A')}")
         rank0_print(f"Image size (longest_edge):  {ip.size.get('longest_edge', 'N/A')}")
     rank0_print(f"Image max_soft_tokens: {getattr(ip, 'max_soft_tokens', 'N/A')}")
+    rank0_print(f"Image min_patches: {getattr(ip, 'min_patches', 'N/A')}")
+    rank0_print(f"Image max_patches: {getattr(ip, 'max_patches', 'N/A')}")
 
     # --- Video Processor ---
     if hasattr(processor, "video_processor") and processor.video_processor is not None:
@@ -402,9 +481,11 @@ def update_processor_pixels(processor, data_args):
         rank0_print("\n=== BEFORE VIDEO PROCESSOR PARAMETERS ===")
         rank0_print(f"Video min_pixels: {getattr(vp, 'min_pixels', 'N/A')}")
         rank0_print(f"Video max_pixels: {getattr(vp, 'max_pixels', 'N/A')}")
+        rank0_print(f"Video num_frames: {getattr(vp, 'num_frames', 'N/A')}")
         rank0_print(f"Video min_frames: {getattr(vp, 'min_frames', 'N/A')}")
         rank0_print(f"Video max_frames: {getattr(vp, 'max_frames', 'N/A')}")
         rank0_print(f"Video fps: {getattr(vp, 'fps', 'N/A')}")
+        rank0_print(f"Video do_sample_frames: {getattr(vp, 'do_sample_frames', 'N/A')}")
         video_size = getattr(vp, "size", {})
         if isinstance(video_size, dict):
             rank0_print(
@@ -433,9 +514,26 @@ def update_processor_pixels(processor, data_args):
                 f"✅ Updated video_processor max_frames to {data_args.video_max_frames}"
             )
 
+        if is_internvl:
+            _update_optional_int_attr(
+                vp,
+                "num_frames",
+                getattr(data_args, "video_max_frames", None),
+                "video_processor",
+            )
+            if hasattr(vp, "do_sample_frames"):
+                vp.do_sample_frames = True
+                rank0_print("Updated video_processor do_sample_frames to True")
+
         if hasattr(vp, "fps"):
-            vp.fps = data_args.video_fps
-            rank0_print(f"✅ Updated video_processor fps to {data_args.video_fps}")
+            if is_internvl and getattr(data_args, "video_max_frames", None) is not None:
+                vp.fps = None
+                rank0_print(
+                    "Updated video_processor fps to None because InternVL uses fixed num_frames"
+                )
+            else:
+                vp.fps = data_args.video_fps
+                rank0_print(f"✅ Updated video_processor fps to {data_args.video_fps}")
 
         if not is_gemma4:
             _update_edge_size(
@@ -444,6 +542,9 @@ def update_processor_pixels(processor, data_args):
                 longest_edge=data_args.video_max_pixels,
                 label="video_processor",
             )
+
+        if is_internvl:
+            _force_square_size(vp, internvl_image_size, "video_processor")
 
         if gemma4_max_soft_tokens is not None and hasattr(vp, "max_soft_tokens"):
             vp.max_soft_tokens = int(gemma4_max_soft_tokens)
@@ -454,9 +555,12 @@ def update_processor_pixels(processor, data_args):
         rank0_print("=== AFTER VIDEO PROCESSOR PARAMETERS ===")
         rank0_print(f"Video min_pixels: {getattr(vp, 'min_pixels', 'N/A')}")
         rank0_print(f"Video max_pixels: {getattr(vp, 'max_pixels', 'N/A')}")
+        rank0_print(f"Video num_frames: {getattr(vp, 'num_frames', 'N/A')}")
         rank0_print(f"Video min_frames: {getattr(vp, 'min_frames', 'N/A')}")
         rank0_print(f"Video max_frames: {getattr(vp, 'max_frames', 'N/A')}")
         rank0_print(f"Video fps: {getattr(vp, 'fps', 'N/A')}")
+        rank0_print(f"Video do_sample_frames: {getattr(vp, 'do_sample_frames', 'N/A')}")
+        rank0_print(f"Video size: {getattr(vp, 'size', 'N/A')}")
         if hasattr(vp, "size") and isinstance(vp.size, dict):
             rank0_print(
                 f"Video size (shortest_edge): {vp.size.get('shortest_edge', 'N/A')}"
@@ -574,6 +678,7 @@ def preprocess_gemma4_visual(
     sources,
     processor,
     using_cot: bool = True,
+    data_args=None,
 ) -> Dict:
     if len(sources) != 1:
         raise ValueError(f"Expected 1 source, got {len(sources)}")
@@ -581,23 +686,49 @@ def preprocess_gemma4_visual(
     source = sources[0]
     base_path = Path(source.get("data_path", ""))
     messages = _build_messages(source, base_path, using_cot, time_instruction="")
+    template_kwargs = _build_hf_chat_template_kwargs(data_args)
     full_result = processor.apply_chat_template(
         messages,
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
+        **template_kwargs,
     )
     full_result = _add_response_labels(full_result, processor.tokenizer)
     full_result["distill_video_metadatas"] = []
     return full_result
 
 
+def _build_hf_chat_template_kwargs(data_args) -> Dict[str, Any]:
+    if data_args is None or getattr(data_args, "model_type", "") != "internvl":
+        return {}
+
+    kwargs: Dict[str, Any] = {}
+    video_max_frames = getattr(data_args, "video_max_frames", None)
+    if video_max_frames is not None:
+        kwargs["num_frames"] = int(video_max_frames)
+        kwargs["do_sample_frames"] = True
+
+    images_kwargs: Dict[str, Any] = {}
+    internvl_min_patches = getattr(data_args, "internvl_min_patches", None)
+    internvl_max_patches = getattr(data_args, "internvl_max_patches", None)
+    if internvl_min_patches is not None:
+        images_kwargs["min_patches"] = int(internvl_min_patches)
+    if internvl_max_patches is not None:
+        images_kwargs["max_patches"] = int(internvl_max_patches)
+    if images_kwargs:
+        kwargs["images_kwargs"] = images_kwargs
+
+    return kwargs
+
+
 def preprocess_hf_chat_visual(
     sources,
     processor,
     using_cot: bool = True,
+    data_args=None,
 ) -> Dict:
-    return preprocess_gemma4_visual(sources, processor, using_cot)
+    return preprocess_gemma4_visual(sources, processor, using_cot, data_args)
 
 
 def _build_minicpmv_messages_and_images(
@@ -879,6 +1010,7 @@ class LazySupervisedDataset(Dataset):
                 sources,
                 self.processor,
                 self.data_args.using_cot,
+                self.data_args,
             )
             if (
                 self.model_type == "internvl"

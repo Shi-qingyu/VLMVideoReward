@@ -252,6 +252,14 @@ def _parameter_numel(param: torch.nn.Parameter) -> int:
     return int(param.numel())
 
 
+def _first_int(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return int(value[0])
+    return int(value)
+
+
 def _print_trainable_summary(model) -> None:
     trainable = 0
     total = 0
@@ -431,6 +439,23 @@ def train(attn_implementation="flash_attention_2"):
         model_type=model_type,
         attn_implementation=attn_implementation,
     )
+    if model_type == "internvl":
+        vision_config = getattr(model.config, "vision_config", None)
+        setattr(
+            data_args,
+            "internvl_model_image_size",
+            _first_int(getattr(vision_config, "image_size", None)),
+        )
+        setattr(
+            data_args,
+            "internvl_patch_size",
+            _first_int(getattr(vision_config, "patch_size", None)),
+        )
+        setattr(
+            data_args,
+            "internvl_downsample_ratio",
+            float(getattr(model.config, "downsample_ratio", 0.5)),
+        )
     setattr(
         data_args,
         "internvl_use_image_flags",

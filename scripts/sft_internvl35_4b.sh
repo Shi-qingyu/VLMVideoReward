@@ -35,9 +35,12 @@ args="
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
-    --video_fps ${VIDEO_FPS:-2} \
-    --video_max_frames ${VIDEO_MAX_FRAMES:-20} \
-    --video_min_frames ${VIDEO_MIN_FRAMES:-10} \
+    --video_fps ${VIDEO_FPS:-1} \
+    --video_max_frames ${VIDEO_MAX_FRAMES:-8} \
+    --video_min_frames ${VIDEO_MIN_FRAMES:-4} \
+    --internvl_image_size ${INTERNVL_IMAGE_SIZE:-448} \
+    --internvl_max_patches ${INTERNVL_MAX_PATCHES:-4} \
+    --internvl_min_patches ${INTERNVL_MIN_PATCHES:-1} \
     --eval_strategy no \
     --save_strategy steps \
     --save_steps ${SAVE_STEPS:-100} \
