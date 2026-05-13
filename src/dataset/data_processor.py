@@ -360,6 +360,55 @@ def update_processor_pixels(processor, data_args):
         setattr(component, attr_name, int(value))
         rank0_print(f"Updated {label} {attr_name} to {int(value)}")
 
+    def _resolve_internvl_image_size():
+        image_size = getattr(data_args, "internvl_image_size", None)
+        if image_size is None:
+            image_size = getattr(data_args, "internvl_model_image_size", None)
+        if image_size is None:
+            return None
+        return int(image_size)
+
+    def _force_square_size(component, image_size: Optional[int], label: str):
+        if image_size is None or not hasattr(component, "size"):
+            return
+        component.size = {"height": int(image_size), "width": int(image_size)}
+        rank0_print(f"Updated {label}.size to InternVL square size: {component.size}")
+
+    def _update_internvl_image_seq_length(image_size: Optional[int]):
+        if not is_internvl or image_size is None:
+            return
+
+        patch_size = getattr(data_args, "internvl_patch_size", None)
+        downsample_ratio = getattr(data_args, "internvl_downsample_ratio", None)
+        if patch_size is None or downsample_ratio is None:
+            return
+
+        patch_size = int(patch_size)
+        downsample_ratio = float(downsample_ratio)
+        if image_size % patch_size != 0:
+            raise ValueError(
+                f"InternVL image/video size {image_size} must be divisible by "
+                f"vision patch size {patch_size}. Try 448, 392, 336, or 280."
+            )
+
+        grid_size = image_size // patch_size
+        pooled_grid_size = grid_size * downsample_ratio
+        rounded_grid_size = int(round(pooled_grid_size))
+        if abs(pooled_grid_size - rounded_grid_size) > 1e-6:
+            raise ValueError(
+                f"InternVL image/video size {image_size} gives patch grid "
+                f"{grid_size}, which is incompatible with downsample_ratio "
+                f"{downsample_ratio}. Try 448, 392, 336, or 280."
+            )
+
+        image_seq_length = rounded_grid_size * rounded_grid_size
+        if hasattr(processor, "image_seq_length"):
+            processor.image_seq_length = image_seq_length
+            rank0_print(f"Updated InternVL image_seq_length to {image_seq_length}")
+
+    internvl_image_size = _resolve_internvl_image_size()
+    _update_internvl_image_seq_length(internvl_image_size)
+
     # --- Image Processor ---
     ip = getattr(processor, "image_processor", None)
     if ip is None:
@@ -391,6 +440,9 @@ def update_processor_pixels(processor, data_args):
             label="image_processor",
         )
 
+    if is_internvl:
+        _force_square_size(ip, internvl_image_size, "image_processor")
+
     gemma4_max_soft_tokens = getattr(data_args, "gemma4_max_soft_tokens", None)
     if gemma4_max_soft_tokens is not None and hasattr(ip, "max_soft_tokens"):
         ip.max_soft_tokens = int(gemma4_max_soft_tokens)
@@ -415,6 +467,7 @@ def update_processor_pixels(processor, data_args):
     rank0_print("=== AFTER IMAGE PROCESSOR PARAMETERS ===")
     rank0_print(f"Image min_pixels: {getattr(ip, 'min_pixels', 'N/A')}")
     rank0_print(f"Image max_pixels: {getattr(ip, 'max_pixels', 'N/A')}")
+    rank0_print(f"Image size: {getattr(ip, 'size', 'N/A')}")
     if hasattr(ip, "size") and isinstance(ip.size, dict):
         rank0_print(f"Image size (shortest_edge): {ip.size.get('shortest_edge', 'N/A')}")
         rank0_print(f"Image size (longest_edge):  {ip.size.get('longest_edge', 'N/A')}")
@@ -490,6 +543,9 @@ def update_processor_pixels(processor, data_args):
                 label="video_processor",
             )
 
+        if is_internvl:
+            _force_square_size(vp, internvl_image_size, "video_processor")
+
         if gemma4_max_soft_tokens is not None and hasattr(vp, "max_soft_tokens"):
             vp.max_soft_tokens = int(gemma4_max_soft_tokens)
             rank0_print(
@@ -504,6 +560,7 @@ def update_processor_pixels(processor, data_args):
         rank0_print(f"Video max_frames: {getattr(vp, 'max_frames', 'N/A')}")
         rank0_print(f"Video fps: {getattr(vp, 'fps', 'N/A')}")
         rank0_print(f"Video do_sample_frames: {getattr(vp, 'do_sample_frames', 'N/A')}")
+        rank0_print(f"Video size: {getattr(vp, 'size', 'N/A')}")
         if hasattr(vp, "size") and isinstance(vp.size, dict):
             rank0_print(
                 f"Video size (shortest_edge): {vp.size.get('shortest_edge', 'N/A')}"
