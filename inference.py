@@ -16,7 +16,7 @@ from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 DEFAULT_MODEL_PATH = (
-    "output/qwen3vl-2b-vjepa21-distill-weight1.0-vision-lr5e-5-bs4-ga4-t-merged"
+    "output/internvl35-4b-baseline-bs4-ga4/checkpoint-300"
 )
 DEFAULT_VIDEO_PATH = "data/videos/eval_0/0.mp4"
 DEFAULT_PROMPT = (
