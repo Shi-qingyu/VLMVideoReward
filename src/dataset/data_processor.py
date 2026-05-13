@@ -95,6 +95,109 @@ def _find_token_sequence(tokens: List[int], pattern: List[int], start: int) -> i
     return -1
 
 
+def _find_token_sequence_before(
+    tokens: List[int],
+    pattern: List[int],
+    start: int,
+    stop: int,
+) -> int:
+    if not pattern:
+        return -1
+    max_start = min(stop, len(tokens)) - len(pattern)
+    for pos in range(start, max_start + 1):
+        if _match_token_sequence(tokens, pos, pattern):
+            return pos
+    return -1
+
+
+def _encode_text_pattern(tokenizer, text: str) -> List[int]:
+    return tokenizer.encode(text, add_special_tokens=False)
+
+
+def _collect_patterns(tokenizer, texts: List[str]) -> List[List[int]]:
+    patterns = []
+    for text in texts:
+        token_ids = _encode_text_pattern(tokenizer, text)
+        if token_ids and token_ids not in patterns:
+            patterns.append(token_ids)
+    return sorted(patterns, key=len, reverse=True)
+
+
+def _find_first_pattern(
+    tokens: List[int],
+    patterns: List[List[int]],
+    start: int,
+    stop: int,
+) -> tuple[int, int]:
+    best_pos = -1
+    best_len = 0
+    for pattern in patterns:
+        pos = _find_token_sequence_before(tokens, pattern, start, stop)
+        if pos != -1 and (best_pos == -1 or pos < best_pos):
+            best_pos = pos
+            best_len = len(pattern)
+    return best_pos, best_len
+
+
+def _assistant_response_spans(
+    tokens: List[int],
+    tokenizer,
+) -> List[tuple[int, int]]:
+    assistant_start_patterns = _collect_patterns(
+        tokenizer,
+        [
+            "<|im_start|>assistant\n",
+            "<|im_start|>assistant",
+            "<start_of_turn>model\n",
+            "<start_of_turn>model",
+            "<|assistant|>\n",
+            "<|assistant|>",
+        ],
+    )
+    assistant_end_patterns = _collect_patterns(
+        tokenizer,
+        [
+            "<|im_end|>",
+            "<end_of_turn>",
+            "</s>",
+        ],
+    )
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos_token_id, int):
+        eos_pattern = [eos_token_id]
+        if eos_pattern not in assistant_end_patterns:
+            assistant_end_patterns.append(eos_pattern)
+
+    if not assistant_start_patterns:
+        return [(0, len(tokens))]
+
+    spans: List[tuple[int, int]] = []
+    search_pos = 0
+    while search_pos < len(tokens):
+        start_pos, start_len = _find_first_pattern(
+            tokens,
+            assistant_start_patterns,
+            search_pos,
+            len(tokens),
+        )
+        if start_pos == -1:
+            break
+
+        content_start = start_pos + start_len
+        end_pos, end_len = _find_first_pattern(
+            tokens,
+            assistant_end_patterns,
+            content_start,
+            len(tokens),
+        )
+        content_end = end_pos if end_pos != -1 else len(tokens)
+        if content_start < content_end:
+            spans.append((content_start, content_end))
+        search_pos = (end_pos + max(end_len, 1)) if end_pos != -1 else len(tokens)
+
+    return spans or [(0, len(tokens))]
+
+
 def _is_whitespace_token(tokenizer, token_id: int) -> bool:
     cache = getattr(tokenizer, "_whitespace_token_cache", None)
     if cache is None:
@@ -220,55 +323,61 @@ def _add_response_labels(full_result: Dict[str, Any], tokenizer) -> Dict[str, An
     answer_start_ids = _get_tag_token_ids(tokenizer, ANSWER_START_TAG)
     answer_end_ids = _get_tag_token_ids(tokenizer, ANSWER_END_TAG)
     input_ids_flat = input_ids[0].tolist()
-    L = len(input_ids_flat)
-    pos = 0
-    while pos < L:
-        if _match_token_sequence(input_ids_flat, pos, think_start_ids):
-            think_end = _find_token_sequence(
-                input_ids_flat,
-                think_end_ids,
-                pos + len(think_start_ids),
-            )
-            if think_end != -1:
-                label_end = think_end + len(think_end_ids)
-                answer_start = _find_token_sequence(
+    for span_start, span_end in _assistant_response_spans(input_ids_flat, tokenizer):
+        pos = span_start
+        while pos < span_end:
+            if _match_token_sequence(input_ids_flat, pos, think_start_ids):
+                think_end = _find_token_sequence_before(
                     input_ids_flat,
-                    answer_start_ids,
-                    label_end,
+                    think_end_ids,
+                    pos + len(think_start_ids),
+                    span_end,
                 )
-                if answer_start != -1:
-                    answer_end = _find_token_sequence(
+                if think_end != -1:
+                    label_end = think_end + len(think_end_ids)
+                    answer_start = _find_token_sequence_before(
                         input_ids_flat,
-                        answer_end_ids,
-                        answer_start + len(answer_start_ids),
+                        answer_start_ids,
+                        label_end,
+                        span_end,
                     )
-                    if answer_end != -1:
-                        label_end = answer_end + len(answer_end_ids)
-                label_end = _extend_supervision_boundary(
-                    tokenizer,
-                    input_ids_flat,
-                    label_end,
-                )
-                labels[0, pos:label_end] = input_ids[0, pos:label_end]
-                pos = label_end
-                continue
+                    if answer_start != -1:
+                        answer_end = _find_token_sequence_before(
+                            input_ids_flat,
+                            answer_end_ids,
+                            answer_start + len(answer_start_ids),
+                            span_end,
+                        )
+                        if answer_end != -1:
+                            label_end = answer_end + len(answer_end_ids)
+                    label_end = _extend_supervision_boundary(
+                        tokenizer,
+                        input_ids_flat,
+                        label_end,
+                    )
+                    label_end = min(label_end, span_end)
+                    labels[0, pos:label_end] = input_ids[0, pos:label_end]
+                    pos = label_end
+                    continue
 
-        if _match_token_sequence(input_ids_flat, pos, answer_start_ids):
-            answer_end = _find_token_sequence(
-                input_ids_flat,
-                answer_end_ids,
-                pos + len(answer_start_ids),
-            )
-            if answer_end != -1:
-                label_end = _extend_supervision_boundary(
-                    tokenizer,
+            if _match_token_sequence(input_ids_flat, pos, answer_start_ids):
+                answer_end = _find_token_sequence_before(
                     input_ids_flat,
-                    answer_end + len(answer_end_ids),
+                    answer_end_ids,
+                    pos + len(answer_start_ids),
+                    span_end,
                 )
-                labels[0, pos:label_end] = input_ids[0, pos:label_end]
-                pos = label_end
-                continue
-        pos += 1
+                if answer_end != -1:
+                    label_end = _extend_supervision_boundary(
+                        tokenizer,
+                        input_ids_flat,
+                        answer_end + len(answer_end_ids),
+                    )
+                    label_end = min(label_end, span_end)
+                    labels[0, pos:label_end] = input_ids[0, pos:label_end]
+                    pos = label_end
+                    continue
+            pos += 1
 
     full_result["labels"] = labels
     full_result["input_ids"] = input_ids
