@@ -198,6 +198,141 @@ def _assistant_response_spans(
     return spans or [(0, len(tokens))]
 
 
+def _token_char_offsets(tokens: List[int], tokenizer) -> tuple[str, List[tuple[int, int]]]:
+    pieces = [
+        tokenizer.decode(
+            [token_id],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        for token_id in tokens
+    ]
+    offsets: List[tuple[int, int]] = []
+    cursor = 0
+    for piece in pieces:
+        start = cursor
+        cursor += len(piece)
+        offsets.append((start, cursor))
+    return "".join(pieces), offsets
+
+
+def _find_first_text_marker(
+    text: str,
+    markers: List[str],
+    start: int,
+    stop: Optional[int] = None,
+) -> tuple[int, str]:
+    search_stop = len(text) if stop is None else min(stop, len(text))
+    best_pos = -1
+    best_marker = ""
+    for marker in sorted(markers, key=len, reverse=True):
+        pos = text.find(marker, start, search_stop)
+        if pos != -1 and (best_pos == -1 or pos < best_pos):
+            best_pos = pos
+            best_marker = marker
+    return best_pos, best_marker
+
+
+def _assistant_text_spans(text: str) -> List[tuple[int, int]]:
+    start_markers = [
+        "<|im_start|>assistant\n",
+        "<|im_start|>assistant",
+        "<start_of_turn>model\n",
+        "<start_of_turn>model",
+        "<|assistant|>\n",
+        "<|assistant|>",
+    ]
+    end_markers = ["<|im_end|>", "<end_of_turn>", "</s>"]
+    spans: List[tuple[int, int]] = []
+    search_pos = 0
+
+    while search_pos < len(text):
+        start_pos, marker = _find_first_text_marker(text, start_markers, search_pos)
+        if start_pos == -1:
+            break
+        content_start = start_pos + len(marker)
+        if content_start < len(text) and text[content_start] == "\n":
+            content_start += 1
+        end_pos, end_marker = _find_first_text_marker(text, end_markers, content_start)
+        content_end = end_pos if end_pos != -1 else len(text)
+        if content_start < content_end:
+            spans.append((content_start, content_end))
+        search_pos = (
+            end_pos + max(len(end_marker), 1)
+            if end_pos != -1
+            else len(text)
+        )
+
+    return spans or [(0, len(text))]
+
+
+def _response_text_label_spans(text: str) -> List[tuple[int, int]]:
+    label_spans: List[tuple[int, int]] = []
+
+    for span_start, span_end in _assistant_text_spans(text):
+        pos = span_start
+        while pos < span_end:
+            think_start = text.find(THINK_START_TAG, pos, span_end)
+            answer_start = text.find(ANSWER_START_TAG, pos, span_end)
+
+            if think_start == -1 and answer_start == -1:
+                break
+
+            if think_start != -1 and (
+                answer_start == -1 or think_start < answer_start
+            ):
+                think_end = text.find(
+                    THINK_END_TAG,
+                    think_start + len(THINK_START_TAG),
+                    span_end,
+                )
+                if think_end == -1:
+                    pos = think_start + len(THINK_START_TAG)
+                    continue
+                label_end = think_end + len(THINK_END_TAG)
+                next_answer_start = text.find(ANSWER_START_TAG, label_end, span_end)
+                if next_answer_start != -1:
+                    answer_end = text.find(
+                        ANSWER_END_TAG,
+                        next_answer_start + len(ANSWER_START_TAG),
+                        span_end,
+                    )
+                    if answer_end != -1:
+                        label_end = answer_end + len(ANSWER_END_TAG)
+                label_spans.append((think_start, label_end))
+                pos = label_end
+                continue
+
+            answer_end = text.find(
+                ANSWER_END_TAG,
+                answer_start + len(ANSWER_START_TAG),
+                span_end,
+            )
+            if answer_end == -1:
+                pos = answer_start + len(ANSWER_START_TAG)
+                continue
+            label_end = answer_end + len(ANSWER_END_TAG)
+            label_spans.append((answer_start, label_end))
+            pos = label_end
+
+    return label_spans
+
+
+def _label_tokens_from_char_spans(
+    labels: torch.Tensor,
+    input_ids: torch.Tensor,
+    token_offsets: List[tuple[int, int]],
+    label_spans: List[tuple[int, int]],
+) -> None:
+    for token_index, (token_start, token_end) in enumerate(token_offsets):
+        if token_start == token_end:
+            continue
+        for label_start, label_end in label_spans:
+            if token_start < label_end and token_end > label_start:
+                labels[0, token_index] = input_ids[0, token_index]
+                break
+
+
 def _is_whitespace_token(tokenizer, token_id: int) -> bool:
     cache = getattr(tokenizer, "_whitespace_token_cache", None)
     if cache is None:
@@ -317,67 +452,10 @@ def _ensure_batched_input_ids(input_ids: Any) -> torch.Tensor:
 def _add_response_labels(full_result: Dict[str, Any], tokenizer) -> Dict[str, Any]:
     input_ids = _ensure_batched_input_ids(full_result["input_ids"])
     labels = torch.full_like(input_ids, IGNORE_INDEX)
-
-    think_start_ids = _get_tag_token_ids(tokenizer, THINK_START_TAG)
-    think_end_ids = _get_tag_token_ids(tokenizer, THINK_END_TAG)
-    answer_start_ids = _get_tag_token_ids(tokenizer, ANSWER_START_TAG)
-    answer_end_ids = _get_tag_token_ids(tokenizer, ANSWER_END_TAG)
     input_ids_flat = input_ids[0].tolist()
-    for span_start, span_end in _assistant_response_spans(input_ids_flat, tokenizer):
-        pos = span_start
-        while pos < span_end:
-            if _match_token_sequence(input_ids_flat, pos, think_start_ids):
-                think_end = _find_token_sequence_before(
-                    input_ids_flat,
-                    think_end_ids,
-                    pos + len(think_start_ids),
-                    span_end,
-                )
-                if think_end != -1:
-                    label_end = think_end + len(think_end_ids)
-                    answer_start = _find_token_sequence_before(
-                        input_ids_flat,
-                        answer_start_ids,
-                        label_end,
-                        span_end,
-                    )
-                    if answer_start != -1:
-                        answer_end = _find_token_sequence_before(
-                            input_ids_flat,
-                            answer_end_ids,
-                            answer_start + len(answer_start_ids),
-                            span_end,
-                        )
-                        if answer_end != -1:
-                            label_end = answer_end + len(answer_end_ids)
-                    label_end = _extend_supervision_boundary(
-                        tokenizer,
-                        input_ids_flat,
-                        label_end,
-                    )
-                    label_end = min(label_end, span_end)
-                    labels[0, pos:label_end] = input_ids[0, pos:label_end]
-                    pos = label_end
-                    continue
-
-            if _match_token_sequence(input_ids_flat, pos, answer_start_ids):
-                answer_end = _find_token_sequence_before(
-                    input_ids_flat,
-                    answer_end_ids,
-                    pos + len(answer_start_ids),
-                    span_end,
-                )
-                if answer_end != -1:
-                    label_end = _extend_supervision_boundary(
-                        tokenizer,
-                        input_ids_flat,
-                        answer_end + len(answer_end_ids),
-                    )
-                    label_end = min(label_end, span_end)
-                    labels[0, pos:label_end] = input_ids[0, pos:label_end]
-                    pos = label_end
-                    continue
-            pos += 1
+    decoded_text, token_offsets = _token_char_offsets(input_ids_flat, tokenizer)
+    label_spans = _response_text_label_spans(decoded_text)
+    _label_tokens_from_char_spans(labels, input_ids, token_offsets, label_spans)
 
     full_result["labels"] = labels
     full_result["input_ids"] = input_ids
