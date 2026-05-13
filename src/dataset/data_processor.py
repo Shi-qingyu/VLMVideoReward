@@ -322,6 +322,36 @@ def update_processor_pixels(processor, data_args):
     logger = logging.getLogger(__name__)
     is_gemma4 = getattr(data_args, "model_type", "") == "gemma4"
 
+    def _update_edge_size(component, shortest_edge: int, longest_edge: int, label: str):
+        if not hasattr(component, "size") or not isinstance(component.size, dict):
+            return
+
+        size = component.size
+        keys = set(size)
+        if {"height", "width"}.issubset(keys):
+            component.size = {"height": size["height"], "width": size["width"]}
+            rank0_print(
+                f"Kept {label}.size as height/width: {component.size}"
+            )
+            return
+        if {"max_height", "max_width"}.issubset(keys):
+            component.size = {
+                "max_height": size["max_height"],
+                "max_width": size["max_width"],
+            }
+            rank0_print(
+                f"Kept {label}.size as max_height/max_width: {component.size}"
+            )
+            return
+        if "shortest_edge" in keys or "longest_edge" in keys:
+            new_size = {}
+            if "shortest_edge" in keys:
+                new_size["shortest_edge"] = shortest_edge
+            if "longest_edge" in keys:
+                new_size["longest_edge"] = longest_edge
+            component.size = new_size
+            rank0_print(f"Updated {label}.size to {component.size}")
+
     # --- Image Processor ---
     ip = getattr(processor, "image_processor", None)
     if ip is None:
@@ -343,14 +373,12 @@ def update_processor_pixels(processor, data_args):
         rank0_print(f"✅ Updated image_processor min_pixels to {data_args.min_pixels}")
         rank0_print(f"✅ Updated image_processor max_pixels to {data_args.max_pixels}")
 
-    if not is_gemma4 and hasattr(ip, "size") and isinstance(ip.size, dict):
-        ip.size["shortest_edge"] = data_args.min_pixels
-        ip.size["longest_edge"] = data_args.max_pixels
-        rank0_print(
-            f"✅ Updated image_processor size['shortest_edge'] to {data_args.min_pixels}"
-        )
-        rank0_print(
-            f"✅ Updated image_processor size['longest_edge'] to {data_args.max_pixels}"
+    if not is_gemma4:
+        _update_edge_size(
+            ip,
+            shortest_edge=data_args.min_pixels,
+            longest_edge=data_args.max_pixels,
+            label="image_processor",
         )
 
     gemma4_max_soft_tokens = getattr(data_args, "gemma4_max_soft_tokens", None)
@@ -409,14 +437,12 @@ def update_processor_pixels(processor, data_args):
             vp.fps = data_args.video_fps
             rank0_print(f"✅ Updated video_processor fps to {data_args.video_fps}")
 
-        if not is_gemma4 and hasattr(vp, "size") and isinstance(vp.size, dict):
-            vp.size["shortest_edge"] = data_args.video_min_pixels
-            vp.size["longest_edge"] = data_args.video_max_pixels
-            rank0_print(
-                f"✅ Updated Video size (shortest_edge): {vp.size.get('shortest_edge', 'N/A')}"
-            )
-            rank0_print(
-                f"✅ Updated Video size (longest_edge):  {vp.size.get('longest_edge', 'N/A')}"
+        if not is_gemma4:
+            _update_edge_size(
+                vp,
+                shortest_edge=data_args.video_min_pixels,
+                longest_edge=data_args.video_max_pixels,
+                label="video_processor",
             )
 
         if gemma4_max_soft_tokens is not None and hasattr(vp, "max_soft_tokens"):
