@@ -13,7 +13,16 @@ import multiprocessing as mp
 from src.dataset.data_processor import make_rl_data_module
 from src.train.checkpoint_utils import prepare_inference_model_dir
 from transformers import AutoProcessor
-from vllm import LLM, SamplingParams
+from inference import (
+    build_generation_kwargs,
+    build_template_kwargs,
+    configure_internvl_processor,
+    infer_model_type,
+    load_model,
+    load_processor,
+    prepare_processor,
+    trim_repeated_response,
+)
 
 
 MERGED_KEYS = [
@@ -60,9 +69,26 @@ KEY_ALIASES = {
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument(
+        "--model_type",
+        default="auto",
+        choices=["auto", "qwen3vl", "qwen2.5vl", "qwen2vl", "internvl", "gemma4", "minicpmv"],
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "vllm", "hf"],
+        default="auto",
+        help="auto uses HF for InternVL and vLLM for other models.",
+    )
     parser.add_argument("--dataset_use", type=str, default="videoreward_eval_polished_v3")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
+    parser.add_argument("--model_max_length", type=int, default=8192)
+    parser.add_argument("--dtype", default="auto")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--repetition_penalty", type=float, default=1.05)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     parser.add_argument("--using_cot", action="store_true", default=True)
     parser.add_argument("--output_dir", type=str, default="eval_results")
     parser.add_argument(
@@ -76,6 +102,18 @@ def get_args():
     parser.add_argument("--tensor_parallel_size", type=int, default=8)
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.7)
     parser.add_argument("--max_num_seqs", type=int, default=8)
+    parser.add_argument(
+        "--allowed_local_media_path",
+        type=str,
+        default="/mnt/bn/xiangtai-training-data-video/sqy/projects/videorewardmodel/data/videos/",
+    )
+
+    # InternVL/HF processor args. Keep these aligned with inference.py.
+    parser.add_argument("--video_max_frames", type=int, default=8)
+    parser.add_argument("--internvl_image_size", type=int, default=448)
+    parser.add_argument("--internvl_min_patches", type=int, default=1)
+    parser.add_argument("--internvl_max_patches", type=int, default=4)
+    parser.add_argument("--attn_implementation", default=os.environ.get("ATTN_IMPLEMENTATION"))
     return parser.parse_args()
 
 
@@ -283,87 +321,44 @@ def to_vllm_chat_format(sample):
     ]
 
 
-@torch.inference_mode()
-def run_eval(args):
+def extract_first_video(sample):
+    for message in sample:
+        for part in message.get("content", []):
+            if part.get("type") == "video":
+                return part.get("video")
+    return None
+
+
+def extract_text(sample):
+    text_parts = []
+    for message in sample:
+        for part in message.get("content", []):
+            if part.get("type") == "text":
+                text_parts.append(part.get("text", ""))
+    return "\n".join(text_parts)
+
+
+def resolve_eval_model_type(args, inference_model_path):
+    if args.model_type == "auto":
+        return infer_model_type(inference_model_path)
+    return args.model_type
+
+
+def resolve_backend(args, model_type: str) -> str:
+    if args.backend != "auto":
+        return args.backend
+    return "hf" if model_type == "internvl" else "vllm"
+
+
+def result_paths(args):
     model_name = "-".join(args.model_path.split("/")[1:])
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, f"{model_name}.json")
     metrics_path = output_path.replace(".json", "_metrics.json")
-    metric_keys = metric_keys_from_schema(args.metric_schema)
-    inference_model_path = prepare_inference_model_dir(args.model_path)
+    return output_path, metrics_path
 
-    results = []
-    if os.path.exists(output_path):
-        print(f"Loading cached results from {output_path}")
-        with open(output_path, "r", encoding="utf-8") as f:
-            try:
-                results = json.load(f)
-            except json.JSONDecodeError:
-                print("Warning: JSON file corrupted or empty. Starting from scratch.")
-                results = []
-        metrics, summary = calculate_metrics(results, metric_keys)
-        print_table(metrics, summary, metric_keys)
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "metric_schema": "legacy" if metric_keys == LEGACY_KEYS else "merged",
-                    "per_dim": metrics,
-                    "overall": summary,
-                },
-                f,
-                indent=4,
-                ensure_ascii=False,
-            )
-        print(f"Metrics saved to {metrics_path}")
-        return
 
-    llm = LLM(
-        model=inference_model_path,
-        trust_remote_code=True,
-        tensor_parallel_size=args.tensor_parallel_size,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        max_num_seqs=args.max_num_seqs,
-        limit_mm_per_prompt={"video": 1},
-        allowed_local_media_path="/mnt/bn/xiangtai-training-data-video/sqy/projects/videorewardmodel/data/videos/",
-    )
-    sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=args.max_new_tokens,
-    )
-
-    processor = AutoProcessor.from_pretrained(inference_model_path)
-    data_module = make_rl_data_module(processor=processor, data_args=args)
-    dataloader = DataLoader(
-        data_module["train_dataset"],
-        collate_fn=data_module["data_collator"],
-        batch_size=args.batch_size,
-    )
-
-    results = []
-    for batch in tqdm(dataloader, desc="Inference"):
-        user_prompts = batch["user"]
-        gt_prompts = batch["gt"]
-
-        converted_prompts = [to_vllm_chat_format(p) for p in user_prompts]
-        outputs = llm.chat(converted_prompts, sampling_params=sampling_params)
-        preds = [o.outputs[0].text for o in outputs]
-
-        for i in range(len(preds)):
-            video = user_prompts[i][0]["content"][0]["video"]
-            gt_text = gt_prompts[i][0]["content"][0]["text"]
-            item = {
-                "video": video,
-                "answer": preds[i],
-                "ground_truth": gt_text,
-            }
-            results.append(item)
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=4, ensure_ascii=False)
-
-    metrics, summary = calculate_metrics(results, metric_keys)
-    print_table(metrics, summary, metric_keys)
-
+def save_metrics(metrics_path, metric_keys, metrics, summary):
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -376,6 +371,166 @@ def run_eval(args):
             ensure_ascii=False,
         )
 
+
+def load_cached_results(output_path):
+    if not os.path.exists(output_path):
+        return None
+    print(f"Loading cached results from {output_path}")
+    with open(output_path, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            print("Warning: JSON file corrupted or empty. Starting from scratch.")
+            return []
+
+
+def write_results(output_path, results):
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4, ensure_ascii=False)
+
+
+def build_dataloader(processor, args):
+    data_module = make_rl_data_module(processor=processor, data_args=args)
+    return DataLoader(
+        data_module["train_dataset"],
+        collate_fn=data_module["data_collator"],
+        batch_size=args.batch_size,
+    )
+
+
+def run_eval_vllm(args, inference_model_path, output_path):
+    from vllm import LLM, SamplingParams
+
+    llm = LLM(
+        model=inference_model_path,
+        trust_remote_code=True,
+        tensor_parallel_size=args.tensor_parallel_size,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_num_seqs=args.max_num_seqs,
+        limit_mm_per_prompt={"video": 1},
+        allowed_local_media_path=args.allowed_local_media_path,
+    )
+    sampling_params = SamplingParams(
+        temperature=args.temperature,
+        top_p=args.top_p,
+        max_tokens=args.max_new_tokens,
+        stop=["</answer>", "<|im_end|>"],
+    )
+
+    processor = AutoProcessor.from_pretrained(inference_model_path)
+    dataloader = build_dataloader(processor, args)
+
+    results = []
+    for batch in tqdm(dataloader, desc="Inference(vLLM)"):
+        user_prompts = batch["user"]
+        gt_prompts = batch["gt"]
+
+        converted_prompts = [to_vllm_chat_format(p) for p in user_prompts]
+        outputs = llm.chat(converted_prompts, sampling_params=sampling_params)
+        preds = [trim_repeated_response(o.outputs[0].text) for o in outputs]
+
+        for i, pred in enumerate(preds):
+            results.append(
+                {
+                    "video": extract_first_video(user_prompts[i]),
+                    "answer": pred,
+                    "ground_truth": extract_text(gt_prompts[i]),
+                }
+            )
+
+        write_results(output_path, results)
+
+    return results
+
+
+def generate_hf_one(model, processor, model_type: str, args, messages):
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt",
+        **build_template_kwargs(model_type, args),
+    )
+    inputs = inputs.to(model.device)
+
+    generated_ids = model.generate(
+        **inputs,
+        **build_generation_kwargs(processor.tokenizer, args),
+    )
+    generated_ids_trimmed = [
+        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
+    output_text = processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
+    return trim_repeated_response(output_text[0])
+
+
+def run_eval_hf(args, inference_model_path, model_type: str, output_path):
+    model = load_model(
+        inference_model_path,
+        model_type,
+        dtype=args.dtype,
+        attn_implementation=args.attn_implementation,
+    )
+    processor = load_processor(inference_model_path, model_type)
+    prepare_processor(processor, model, model_type, args.model_max_length)
+    if model_type == "internvl":
+        configure_internvl_processor(processor, model, args)
+
+    dataloader = build_dataloader(processor, args)
+
+    results = []
+    for batch in tqdm(dataloader, desc="Inference(HF)"):
+        user_prompts = batch["user"]
+        gt_prompts = batch["gt"]
+
+        for user_prompt, gt_prompt in zip(user_prompts, gt_prompts):
+            pred = generate_hf_one(model, processor, model_type, args, user_prompt)
+            results.append(
+                {
+                    "video": extract_first_video(user_prompt),
+                    "answer": pred,
+                    "ground_truth": extract_text(gt_prompt),
+                }
+            )
+
+        write_results(output_path, results)
+
+    return results
+
+
+@torch.inference_mode()
+def run_eval(args):
+    metric_keys = metric_keys_from_schema(args.metric_schema)
+    inference_model_path = prepare_inference_model_dir(args.model_path)
+    model_type = resolve_eval_model_type(args, inference_model_path)
+    args.model_type = model_type
+    backend = resolve_backend(args, model_type)
+    output_path, metrics_path = result_paths(args)
+
+    print(f"model_type={model_type}, backend={backend}")
+
+    results = load_cached_results(output_path)
+    if results is not None and results:
+        metrics, summary = calculate_metrics(results, metric_keys)
+        print_table(metrics, summary, metric_keys)
+        save_metrics(metrics_path, metric_keys, metrics, summary)
+        print(f"Metrics saved to {metrics_path}")
+        return
+
+    if backend == "hf":
+        results = run_eval_hf(args, inference_model_path, model_type, output_path)
+    else:
+        results = run_eval_vllm(args, inference_model_path, output_path)
+
+    metrics, summary = calculate_metrics(results, metric_keys)
+    print_table(metrics, summary, metric_keys)
+
+    save_metrics(metrics_path, metric_keys, metrics, summary)
     print(f"Metrics saved to {metrics_path}")
 
 

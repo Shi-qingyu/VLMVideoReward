@@ -390,6 +390,9 @@ def _build_video_time_instruction(base_path: Path, videos: List[str], processor)
 
     sample_fps = video_processor.fps
     temporal_patch_size = video_processor.temporal_patch_size
+    if sample_fps is None or temporal_patch_size is None:
+        return ""
+
     video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
     vp_output = video_processor(videos=video_pool, return_metadata=True)
     video_metadata = vp_output.video_metadata[0]
@@ -525,6 +528,7 @@ def update_processor_pixels(processor, data_args):
     model_type = getattr(data_args, "model_type", "")
     is_gemma4 = model_type == "gemma4"
     is_internvl = model_type == "internvl"
+    is_molmo2 = model_type == "molmo2"
 
     def _update_edge_size(component, shortest_edge: int, longest_edge: int, label: str):
         if not hasattr(component, "size") or not isinstance(component.size, dict):
@@ -570,6 +574,12 @@ def update_processor_pixels(processor, data_args):
             return None
         return int(image_size)
 
+    def _resolve_molmo2_image_size():
+        image_size = getattr(data_args, "molmo2_image_size", None)
+        if image_size is None:
+            return None
+        return int(image_size)
+
     def _force_square_size(component, image_size: Optional[int], label: str):
         if image_size is None or not hasattr(component, "size"):
             return
@@ -609,6 +619,7 @@ def update_processor_pixels(processor, data_args):
             rank0_print(f"Updated InternVL image_seq_length to {image_seq_length}")
 
     internvl_image_size = _resolve_internvl_image_size()
+    molmo2_image_size = _resolve_molmo2_image_size()
     _update_internvl_image_seq_length(internvl_image_size)
 
     # --- Image Processor ---
@@ -628,13 +639,13 @@ def update_processor_pixels(processor, data_args):
     rank0_print(f"Image min_patches: {getattr(ip, 'min_patches', 'N/A')}")
     rank0_print(f"Image max_patches: {getattr(ip, 'max_patches', 'N/A')}")
 
-    if not is_gemma4 and hasattr(ip, "min_pixels") and hasattr(ip, "max_pixels"):
+    if not (is_gemma4 or is_molmo2) and hasattr(ip, "min_pixels") and hasattr(ip, "max_pixels"):
         ip.min_pixels = data_args.min_pixels
         ip.max_pixels = data_args.max_pixels
         rank0_print(f"✅ Updated image_processor min_pixels to {data_args.min_pixels}")
         rank0_print(f"✅ Updated image_processor max_pixels to {data_args.max_pixels}")
 
-    if not is_gemma4:
+    if not (is_gemma4 or is_molmo2):
         _update_edge_size(
             ip,
             shortest_edge=data_args.min_pixels,
@@ -644,6 +655,8 @@ def update_processor_pixels(processor, data_args):
 
     if is_internvl:
         _force_square_size(ip, internvl_image_size, "image_processor")
+    if is_molmo2:
+        _force_square_size(ip, molmo2_image_size, "image_processor")
 
     gemma4_max_soft_tokens = getattr(data_args, "gemma4_max_soft_tokens", None)
     if gemma4_max_soft_tokens is not None and hasattr(ip, "max_soft_tokens"):
@@ -696,7 +709,7 @@ def update_processor_pixels(processor, data_args):
             rank0_print(f"Video size (longest_edge):  {video_size.get('longest_edge', 'N/A')}")
         rank0_print(f"Video max_soft_tokens: {getattr(vp, 'max_soft_tokens', 'N/A')}")
 
-        if not is_gemma4 and hasattr(vp, "min_pixels") and hasattr(vp, "max_pixels"):
+        if not (is_gemma4 or is_molmo2) and hasattr(vp, "min_pixels") and hasattr(vp, "max_pixels"):
             vp.min_pixels = data_args.video_min_pixels
             vp.max_pixels = data_args.video_max_pixels
             rank0_print(
@@ -727,6 +740,27 @@ def update_processor_pixels(processor, data_args):
                 vp.do_sample_frames = True
                 rank0_print("Updated video_processor do_sample_frames to True")
 
+        if is_molmo2:
+            _update_optional_int_attr(
+                vp,
+                "num_frames",
+                getattr(data_args, "video_max_frames", None),
+                "video_processor",
+            )
+            if hasattr(vp, "frame_sample_mode"):
+                vp.frame_sample_mode = getattr(
+                    data_args,
+                    "molmo2_video_frame_sampling_mode",
+                    "uniform_last_frame",
+                )
+                rank0_print(
+                    f"Updated video_processor frame_sample_mode to {vp.frame_sample_mode}"
+                )
+            if hasattr(vp, "max_fps"):
+                video_fps = getattr(data_args, "video_fps", None)
+                vp.max_fps = float(video_fps) if video_fps and video_fps > 0 else None
+                rank0_print(f"Updated video_processor max_fps to {vp.max_fps}")
+
         if hasattr(vp, "fps"):
             if is_internvl and getattr(data_args, "video_max_frames", None) is not None:
                 vp.fps = None
@@ -737,7 +771,7 @@ def update_processor_pixels(processor, data_args):
                 vp.fps = data_args.video_fps
                 rank0_print(f"✅ Updated video_processor fps to {data_args.video_fps}")
 
-        if not is_gemma4:
+        if not (is_gemma4 or is_molmo2):
             _update_edge_size(
                 vp,
                 shortest_edge=data_args.video_min_pixels,
@@ -747,6 +781,8 @@ def update_processor_pixels(processor, data_args):
 
         if is_internvl:
             _force_square_size(vp, internvl_image_size, "video_processor")
+        if is_molmo2:
+            _force_square_size(vp, molmo2_image_size, "video_processor")
 
         if gemma4_max_soft_tokens is not None and hasattr(vp, "max_soft_tokens"):
             vp.max_soft_tokens = int(gemma4_max_soft_tokens)
@@ -773,7 +809,13 @@ def update_processor_pixels(processor, data_args):
     return processor
 
 
-def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = True, time_instruction: str = "") -> List[Dict[str, Any]]:
+def _build_messages(
+    item: Dict[str, Any],
+    base_path: Path,
+    using_cot: bool = True,
+    time_instruction: str = "",
+    video_content_kwargs: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     # Extract and normalize images and videos
     images = _normalize_media_list(item.get("images"))
     videos = _normalize_media_list(item.get("videos"))
@@ -782,9 +824,12 @@ def _build_messages(item: Dict[str, Any], base_path: Path, using_cot: bool = Tru
     image_pool = [
         {"type": "image", "image": _make_abs_paths(base_path, img)} for img in images
     ]
-    video_pool = [
-        {"type": "video", "video": _make_abs_paths(base_path, vid)} for vid in videos
-    ]
+    video_content_kwargs = video_content_kwargs or {}
+    video_pool = []
+    for vid in videos:
+        video_item = {"type": "video", "video": _make_abs_paths(base_path, vid)}
+        video_item.update(video_content_kwargs)
+        video_pool.append(video_item)
 
     messages = []
     for turn in item["conversations"]:
@@ -887,7 +932,13 @@ def preprocess_gemma4_visual(
 
     source = sources[0]
     base_path = Path(source.get("data_path", ""))
-    messages = _build_messages(source, base_path, using_cot, time_instruction="")
+    messages = _build_messages(
+        source,
+        base_path,
+        using_cot,
+        time_instruction="",
+        video_content_kwargs=_build_video_content_kwargs(data_args),
+    )
     template_kwargs = _build_hf_chat_template_kwargs(data_args)
     full_result = processor.apply_chat_template(
         messages,
@@ -899,6 +950,30 @@ def preprocess_gemma4_visual(
     full_result = _add_response_labels(full_result, processor.tokenizer)
     full_result["distill_video_metadatas"] = []
     return full_result
+
+
+def _build_video_content_kwargs(data_args) -> Dict[str, Any]:
+    if data_args is None or getattr(data_args, "model_type", "") != "molmo2":
+        return {}
+
+    kwargs: Dict[str, Any] = {}
+    frame_sampling_mode = getattr(
+        data_args,
+        "molmo2_video_frame_sampling_mode",
+        None,
+    )
+    if frame_sampling_mode:
+        kwargs["frame_sampling_mode"] = frame_sampling_mode
+
+    video_max_frames = getattr(data_args, "video_max_frames", None)
+    if video_max_frames is not None:
+        kwargs["num_frames"] = int(video_max_frames)
+
+    video_fps = getattr(data_args, "video_fps", None)
+    if video_fps is not None and video_fps > 0:
+        kwargs["max_fps"] = float(video_fps)
+
+    return kwargs
 
 
 def _build_hf_chat_template_kwargs(data_args) -> Dict[str, Any]:
@@ -1078,7 +1153,7 @@ class LazySupervisedDataset(Dataset):
             self.get_rope_index = get_rope_index_25
         elif data_args.model_type == "qwen2vl":
             self.get_rope_index = get_rope_index_2
-        elif data_args.model_type in {"gemma4", "internvl", "minicpmv"}:
+        elif data_args.model_type in {"gemma4", "internvl", "minicpmv", "molmo2"}:
             self.get_rope_index = None
         else:
             raise ValueError(f"model_type: {data_args.model_type} not supported")
@@ -1207,7 +1282,7 @@ class LazySupervisedDataset(Dataset):
             raise e
 
     def _get_item(self, sources) -> Dict[str, torch.Tensor]:
-        if self.model_type in {"gemma4", "internvl"}:
+        if self.model_type in {"gemma4", "internvl", "molmo2"}:
             data_dict = preprocess_hf_chat_visual(
                 sources,
                 self.processor,
@@ -1489,6 +1564,25 @@ class DataCollatorForSupervisedDataset(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
+        if any("token_type_ids" in instance for instance in instances):
+            token_type_ids = []
+            for instance in instances:
+                if "token_type_ids" in instance:
+                    token_type_id = _squeeze_leading_singleton(
+                        instance["token_type_ids"]
+                    )
+                else:
+                    token_type_id = torch.zeros(
+                        instance["input_ids"].shape[-1],
+                        dtype=input_ids.dtype,
+                    )
+                token_type_ids.append(token_type_id)
+            batch["token_type_ids"] = torch.nn.utils.rnn.pad_sequence(
+                token_type_ids,
+                batch_first=True,
+                padding_value=0,
+            )[:, : self.tokenizer.model_max_length]
+
         if all("position_ids" in instance for instance in instances):
             position_ids = pad_and_cat([instance["position_ids"] for instance in instances])
             batch["position_ids"] = position_ids[:, :, : self.tokenizer.model_max_length]
@@ -1516,8 +1610,13 @@ class DataCollatorForSupervisedDataset(object):
             ("pixel_values", 0),
             ("image_grid_thw", 0),
             ("image_flags", 1),
+            ("image_token_pooling", 0),
+            ("image_grids", 0),
+            ("image_num_crops", 0),
             ("pixel_values_videos", 0),
             ("video_grid_thw", 0),
+            ("video_token_pooling", 0),
+            ("video_grids", 0),
             ("image_position_ids", -1),
             ("video_position_ids", -1),
             ("input_features", 0),
@@ -1689,6 +1788,7 @@ class LazyRLDataset(Dataset):
     def __init__(self, processor, data_args):
         super().__init__()
         self.processor = processor
+        self.data_args = data_args
 
         dataset = data_args.dataset_use.split(",")
         dataset_list = data_list(dataset)
@@ -1738,7 +1838,12 @@ class LazyRLDataset(Dataset):
                 base_path = Path(source.get("data_path", ""))
 
                 videos = _normalize_media_list(source.get("videos"))
-                time_instruction = _build_video_time_instruction(base_path, videos, self.processor)
+                model_type = getattr(self.data_args, "model_type", "")
+                time_instruction = (
+                    _build_video_time_instruction(base_path, videos, self.processor)
+                    if model_type.startswith("qwen")
+                    else ""
+                )
                 messages = _build_messages(source, base_path, self.using_cot, time_instruction)
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
@@ -1757,6 +1862,7 @@ class LazyRLDataset(Dataset):
                     return_dict=True,
                     return_tensors="pt",
                     padding=True,
+                    **_build_hf_chat_template_kwargs(self.data_args),
                 )
 
                 return {
@@ -1784,7 +1890,7 @@ class DataCollatorForRLDataset(object):
 
 def make_supervised_data_module(processor, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    if getattr(data_args, "model_type", "") in {"gemma4", "internvl", "minicpmv"} and (
+    if getattr(data_args, "model_type", "") in {"gemma4", "internvl", "minicpmv", "molmo2"} and (
         data_args.data_flatten or data_args.data_packing
     ):
         raise ValueError(

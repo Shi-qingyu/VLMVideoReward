@@ -124,6 +124,8 @@ def _infer_model_type(model_name_or_path: str) -> str:
         return "gemma4"
     if "internvl" in model_name:
         return "internvl"
+    if "molmo2" in model_name:
+        return "molmo2"
     if "minicpm-v" in model_name or "minicpmv" in model_name:
         return "minicpmv"
     raise ValueError(f"Unsupported model type: {model_name_or_path}")
@@ -186,7 +188,7 @@ def _patch_internvl_tokenizer(tokenizer):
 def _load_processor(model_args, training_args, model_type: str):
     processor_kwargs = {
         "cache_dir": training_args.cache_dir,
-        "trust_remote_code": model_type in {"internvl", "minicpmv"},
+        "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"},
     }
     try:
         processor = AutoProcessor.from_pretrained(
@@ -474,6 +476,28 @@ def set_model(training_args, model, model_type: str):
             _get_nested_attr(model, "language_model"),
             _get_nested_attr(model, "model.language_model"),
         ]
+    elif model_type == "molmo2":
+        vision_modules = [
+            _get_nested_attr(model, "vision_backbone"),
+            _get_nested_attr(model, "vision_backbone.vit"),
+            _get_nested_attr(model, "model.vision_backbone"),
+            _get_nested_attr(model, "model.vision_backbone.vit"),
+            _get_nested_attr(model, "model.model.vision_backbone"),
+            _get_nested_attr(model, "model.model.vision_backbone.vit"),
+        ]
+        projector_modules = [
+            _get_nested_attr(model, "vision_backbone.image_pooling_2d"),
+            _get_nested_attr(model, "vision_backbone.image_projector"),
+            _get_nested_attr(model, "model.vision_backbone.image_pooling_2d"),
+            _get_nested_attr(model, "model.vision_backbone.image_projector"),
+            _get_nested_attr(model, "model.model.vision_backbone.image_pooling_2d"),
+            _get_nested_attr(model, "model.model.vision_backbone.image_projector"),
+        ]
+        language_modules = [
+            _get_nested_attr(model, "language_model"),
+            _get_nested_attr(model, "model.transformer"),
+            _get_nested_attr(model, "model.model.transformer"),
+        ]
     elif model_type == "minicpmv":
         vision_modules = [_get_nested_attr(model, "vpm")]
         projector_modules = [_get_nested_attr(model, "resampler")]
@@ -542,6 +566,18 @@ def _load_model(model_args, training_args, model_type: str, attn_implementation:
             **model_kwargs,
         )
 
+    if model_type == "molmo2":
+        molmo_attn_impl = (
+            "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
+        )
+        return AutoModelForImageTextToText.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            trust_remote_code=True,
+            attn_implementation=molmo_attn_impl,
+            torch_dtype=torch_dtype,
+        )
+
     raise ValueError(f"Unsupported model_type: {model_type}")
 
 
@@ -557,7 +593,7 @@ def _prepare_processor(processor, model, model_type: str) -> None:
         context_token = getattr(tokenizer, "context_image_token", "<IMG_CONTEXT>")
         model.img_context_token_id = tokenizer.convert_tokens_to_ids(context_token)
 
-    if model_type in {"gemma4", "internvl", "minicpmv"}:
+    if model_type in {"gemma4", "internvl", "minicpmv", "molmo2"}:
         return
 
     num_added = tokenizer.add_tokens(
@@ -586,7 +622,7 @@ def train(attn_implementation="flash_attention_2"):
     model_type = _infer_model_type(model_args.model_name_or_path)
     data_args.model_type = model_type
     setattr(training_args, "model_type", model_type)
-    if model_type in {"gemma4", "internvl", "minicpmv"} and (
+    if model_type in {"gemma4", "internvl", "minicpmv", "molmo2"} and (
         data_args.data_flatten or data_args.data_packing
     ):
         raise ValueError(
@@ -598,7 +634,7 @@ def train(attn_implementation="flash_attention_2"):
             "Gemma4 SFT is supported, but V-JEPA visual distillation is still "
             "wired to Qwen3VL visual token geometry. Set --distill_enable False."
         )
-    if model_type in {"internvl", "minicpmv"} and training_args.distill_enable:
+    if model_type in {"internvl", "minicpmv", "molmo2"} and training_args.distill_enable:
         raise ValueError(
             f"{model_type} SFT is supported, but V-JEPA visual distillation is "
             "currently wired to Qwen3VL visual token geometry. Set --distill_enable False."

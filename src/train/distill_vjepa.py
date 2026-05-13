@@ -582,10 +582,25 @@ def infer_teacher_grid_shape(
         )
 
     spatial_tokens = int(tokens.shape[0]) // teacher_t
-    side = int(round(math.sqrt(spatial_tokens)))
-    if side * side == spatial_tokens:
-        return teacher_t, side, side
-    return teacher_t, spatial_tokens, 1
+    student_h = max(int(student_shape[1]), 1)
+    student_w = max(int(student_shape[2]), 1)
+    target_ratio = student_h / student_w
+
+    best_h = spatial_tokens
+    best_w = 1
+    best_score = float("inf")
+    for factor in range(1, int(math.sqrt(spatial_tokens)) + 1):
+        if spatial_tokens % factor != 0:
+            continue
+        paired = spatial_tokens // factor
+        for height, width in ((factor, paired), (paired, factor)):
+            ratio = height / max(width, 1)
+            score = abs(math.log(max(ratio, 1e-8) / max(target_ratio, 1e-8)))
+            if score < best_score:
+                best_score = score
+                best_h = height
+                best_w = width
+    return teacher_t, best_h, best_w
 
 
 def align_teacher_tokens_to_student_shape(
@@ -667,7 +682,27 @@ class VJepa2TeacherEncoder:
             )
         return frames
 
-    def _preprocess_frames(self, frames_thwc: torch.Tensor) -> torch.Tensor:
+    def _resize_to_target_size(
+        self,
+        frames: torch.Tensor,
+        target_size: Tuple[int, int],
+    ) -> torch.Tensor:
+        target_height, target_width = [max(int(x), 1) for x in target_size]
+        _, _, height, width = frames.shape
+        if height == target_height and width == target_width:
+            return frames
+        return F.interpolate(
+            frames,
+            size=(target_height, target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    def _preprocess_frames(
+        self,
+        frames_thwc: torch.Tensor,
+        target_size: Optional[Tuple[int, int]] = None,
+    ) -> torch.Tensor:
         if frames_thwc.ndim != 4:
             raise ValueError(
                 f"Expected frames with shape [T, H, W, C], got {tuple(frames_thwc.shape)}"
@@ -677,8 +712,11 @@ class VJepa2TeacherEncoder:
         if frames.max() > 1.0:
             frames = frames / 255.0
         frames = frames.permute(0, 3, 1, 2).contiguous()
-        frames = self._resize_short_side(frames)
-        frames = self._center_crop(frames)
+        if target_size is None:
+            frames = self._resize_short_side(frames)
+            frames = self._center_crop(frames)
+        else:
+            frames = self._resize_to_target_size(frames, target_size)
 
         mean = torch.tensor(IMAGENET_MEAN, dtype=frames.dtype).view(1, 3, 1, 1)
         std = torch.tensor(IMAGENET_STD, dtype=frames.dtype).view(1, 3, 1, 1)
@@ -711,6 +749,7 @@ class VJepa2TeacherEncoder:
         video_path: str,
         video_metadata: Optional[dict[str, Any]] = None,
         target_temporal_tokens: Optional[int] = None,
+        target_spatial_size: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         frames = None
         video_error: Optional[Exception] = None
@@ -757,7 +796,10 @@ class VJepa2TeacherEncoder:
         elif int(frames.shape[0]) % 2 != 0:
             frames = torch.cat([frames, frames[-1:].clone()], dim=0)
 
-        return self._preprocess_frames(frames).unsqueeze(0)
+        return self._preprocess_frames(
+            frames,
+            target_size=target_spatial_size,
+        ).unsqueeze(0)
 
     @torch.no_grad()
     def encode_images(
@@ -784,6 +826,7 @@ class VJepa2TeacherEncoder:
         dtype: torch.dtype,
         video_metadatas: Optional[Sequence[dict[str, Any]]] = None,
         target_temporal_tokens: Optional[Sequence[int]] = None,
+        target_spatial_sizes: Optional[Sequence[Tuple[int, int]]] = None,
     ) -> list[torch.Tensor]:
         if not video_paths:
             return []
@@ -797,6 +840,11 @@ class VJepa2TeacherEncoder:
                 "target_temporal_tokens length must match video_paths length: "
                 f"{len(target_temporal_tokens)} vs {len(video_paths)}"
             )
+        if target_spatial_sizes is not None and len(video_paths) != len(target_spatial_sizes):
+            raise ValueError(
+                "target_spatial_sizes length must match video_paths length: "
+                f"{len(target_spatial_sizes)} vs {len(video_paths)}"
+            )
         self.prepare(device, dtype)
         features = []
         temporal_targets = (
@@ -804,21 +852,28 @@ class VJepa2TeacherEncoder:
             if target_temporal_tokens is not None
             else [None] * len(video_paths)
         )
+        spatial_targets = (
+            list(target_spatial_sizes)
+            if target_spatial_sizes is not None
+            else [None] * len(video_paths)
+        )
         metadata_items = (
             list(video_metadatas)
             if video_metadatas is not None
             else [None] * len(video_paths)
         )
-        for video_path, video_metadata, temporal_target in zip(
+        for video_path, video_metadata, temporal_target, spatial_target in zip(
             video_paths,
             metadata_items,
             temporal_targets,
+            spatial_targets,
             strict=False,
         ):
             clip = self._load_video_clip(
                 video_path,
                 video_metadata=video_metadata,
                 target_temporal_tokens=temporal_target,
+                target_spatial_size=spatial_target,
             ).to(device=device, dtype=dtype)
             encoded = self.teacher(clip)
             features.append(encoded.squeeze(0).float())

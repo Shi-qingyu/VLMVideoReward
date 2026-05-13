@@ -43,6 +43,7 @@ distill_loss_type=${DISTILL_LOSS_TYPE:-"cosine"}
 distill_feature_source=${DISTILL_FEATURE_SOURCE:-"visual"}
 distill_teacher_image_size=${DISTILL_TEACHER_IMAGE_SIZE:-384}
 distill_teacher_num_video_frames=${DISTILL_TEACHER_NUM_VIDEO_FRAMES:-20}
+distill_teacher_match_student_resolution=${DISTILL_TEACHER_MATCH_STUDENT_RESOLUTION:-true}
 distill_use_images=${DISTILL_USE_IMAGES:-true}
 distill_use_videos=${DISTILL_USE_VIDEOS:-true}
 distill_visualize=${DISTILL_VISUALIZE:-true}
@@ -82,6 +83,7 @@ args="
     --distill_feature_source ${distill_feature_source} \
     --distill_teacher_image_size ${distill_teacher_image_size} \
     --distill_teacher_num_video_frames ${distill_teacher_num_video_frames} \
+    --distill_teacher_match_student_resolution ${distill_teacher_match_student_resolution} \
     --distill_use_images ${distill_use_images} \
     --distill_use_videos ${distill_use_videos} \
     --distill_visualize ${distill_visualize} \

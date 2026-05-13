@@ -32,7 +32,8 @@ class Qwen3VLDistillationTrainer(Trainer):
         self._last_logged_step = -1
         self._last_distill_visualize_step: Optional[int] = None
         image_processor = getattr(self.processing_class, "image_processor", None)
-        self.visual_merge_size = int(getattr(image_processor, "merge_size", 2))
+        self.visual_merge_size = int(getattr(image_processor, "merge_size", None) or 2)
+        self.visual_patch_size = int(getattr(image_processor, "patch_size", None) or 14)
 
         if not self.distill_enabled:
             self.teacher_encoder = None
@@ -64,6 +65,20 @@ class Qwen3VLDistillationTrainer(Trainer):
             student_dim=student_dim,
             teacher_dim=self.teacher_encoder.teacher_dim,
         )
+
+    def _grid_pixel_sizes(
+        self,
+        grid_thw: Optional[torch.Tensor],
+    ) -> Optional[list[tuple[int, int]]]:
+        if grid_thw is None:
+            return None
+
+        sizes: list[tuple[int, int]] = []
+        patch_size = max(int(self.visual_patch_size), 1)
+        for grid_item in grid_thw.detach().cpu():
+            _, grid_h, grid_w = [int(x) for x in grid_item.tolist()]
+            sizes.append((max(grid_h, 1) * patch_size, max(grid_w, 1) * patch_size))
+        return sizes
 
     def _current_distill_weight(self) -> float:
         base_weight = float(getattr(self.args, "distill_weight", 0.0))
@@ -371,12 +386,16 @@ class Qwen3VLDistillationTrainer(Trainer):
                 self.visual_merge_size,
             )
             target_temporal_tokens = [shape[0] for _, shape in student_video_groups]
+            target_spatial_sizes = None
+            if bool(getattr(self.args, "distill_teacher_match_student_resolution", True)):
+                target_spatial_sizes = self._grid_pixel_sizes(inputs.get("video_grid_thw"))
             teacher_video_groups = self.teacher_encoder.encode_videos(
                 video_paths=video_paths,
                 device=device,
                 dtype=teacher_dtype,
                 video_metadatas=video_metadatas if video_metadatas else None,
                 target_temporal_tokens=target_temporal_tokens,
+                target_spatial_sizes=target_spatial_sizes,
             )
             losses.extend(
                 self._align_and_score(
