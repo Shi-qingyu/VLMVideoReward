@@ -108,33 +108,48 @@ def is_hf_internvl_checkpoint(model_path: str) -> bool:
     )
 
 
-def token_to_id(tokenizer, token: str) -> int:
+def token_to_id(tokenizer, token: str, required: bool = True) -> int | None:
     token_id = tokenizer.convert_tokens_to_ids(token)
-    if token_id is None or token_id == tokenizer.unk_token_id:
+    if isinstance(token_id, list):
+        token_id = token_id[0] if token_id else None
+    if token_id is None or token_id == getattr(tokenizer, "unk_token_id", None):
         ids = tokenizer.encode(token, add_special_tokens=False)
-        if len(ids) != 1:
+        token_id = ids[0] if len(ids) == 1 else None
+
+    if token_id is None:
+        if required:
             raise ValueError(f"Could not resolve tokenizer id for InternVL token: {token}")
-        token_id = ids[0]
+        return None
     return int(token_id)
 
 
 def patch_internvl_tokenizer(tokenizer):
-    token_attrs = {
+    required_token_attrs = {
         "start_image_token": "<img>",
         "end_image_token": "</img>",
         "context_image_token": "<IMG_CONTEXT>",
+    }
+    optional_token_attrs = {
         "image_token": "<image>",
         "video_token": "<video>",
     }
-    for attr, token in token_attrs.items():
-        if not hasattr(tokenizer, attr):
-            setattr(tokenizer, attr, token)
+    for attr, token in {**required_token_attrs, **optional_token_attrs}.items():
+        value = getattr(tokenizer, attr, None) or token
+        setattr(tokenizer, attr, value)
 
-    tokenizer.start_image_token_id = token_to_id(tokenizer, tokenizer.start_image_token)
+    tokenizer.start_image_token_id = token_to_id(
+        tokenizer,
+        tokenizer.start_image_token,
+    )
     tokenizer.end_image_token_id = token_to_id(tokenizer, tokenizer.end_image_token)
-    tokenizer.context_image_token_id = token_to_id(tokenizer, tokenizer.context_image_token)
-    tokenizer.image_token_id = token_to_id(tokenizer, tokenizer.image_token)
-    tokenizer.video_token_id = token_to_id(tokenizer, tokenizer.video_token)
+    tokenizer.context_image_token_id = token_to_id(
+        tokenizer,
+        tokenizer.context_image_token,
+    )
+    for attr in optional_token_attrs:
+        token_id = token_to_id(tokenizer, getattr(tokenizer, attr), required=False)
+        if token_id is not None:
+            setattr(tokenizer, f"{attr}_id", token_id)
     return tokenizer
 
 
