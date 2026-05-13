@@ -16,7 +16,13 @@ from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 
 
-OLD_KEYS = [
+MERGED_KEYS = [
+    "Video Quality",
+    "Motion & Interaction",
+    "Prompt Alignment",
+]
+
+LEGACY_KEYS = [
     "Video Quality",
     "Subject Movement",
     "Physical Interaction",
@@ -25,6 +31,30 @@ OLD_KEYS = [
     "Object Existence",
     "Subject-Object Interaction",
 ]
+
+MERGE_GROUPS = {
+    "Motion & Interaction": [
+        "Subject Movement",
+        "Physical Interaction",
+        "Cause-Effect",
+    ],
+    "Prompt Alignment": [
+        "Subject Existence",
+        "Object Existence",
+        "Subject-Object Interaction",
+    ],
+}
+
+KEY_ALIASES = {
+    "Video Quality": ["Video Quality", "Visual Quality"],
+    "Motion & Interaction": [
+        "Motion & Interaction",
+        "Motion and Interaction",
+        "Motion & Physical Consistency",
+        "Motion and Physical Consistency",
+    ],
+    "Prompt Alignment": ["Prompt Alignment"],
+}
 
 
 def get_args():
@@ -35,6 +65,12 @@ def get_args():
     parser.add_argument("--max_new_tokens", type=int, default=1024)
     parser.add_argument("--using_cot", action="store_true", default=True)
     parser.add_argument("--output_dir", type=str, default="eval_results")
+    parser.add_argument(
+        "--metric_schema",
+        choices=["auto", "merged", "legacy"],
+        default="auto",
+        help="Metric dimensions: auto/merged use the 3-dim schema; legacy uses the old 7-dim schema.",
+    )
 
     # vLLM args
     parser.add_argument("--tensor_parallel_size", type=int, default=8)
@@ -55,35 +91,66 @@ def normalize_label(text: str) -> str:
     return "fail"
 
 
+def metric_keys_from_schema(schema: str):
+    if schema == "legacy":
+        return LEGACY_KEYS
+    return MERGED_KEYS
+
+
+def aliases_for_key(key: str):
+    return KEY_ALIASES.get(key, [key])
+
+
 def parse_key_value_pairs(text: str, keys):
     parsed = {}
     for key in keys:
-        pattern = rf"{re.escape(key)}\s*:\s*([A-Za-z]+)"
+        alias_pattern = "|".join(re.escape(alias) for alias in aliases_for_key(key))
+        pattern = rf"\[?\s*(?:{alias_pattern})\s*\]?\s*[:：]\s*([A-Za-z]+)"
         match = re.search(pattern, text, re.I)
         parsed[key] = normalize_label(match.group(1)) if match else "fail"
     return parsed
 
 
-def parse_output(text: str):
-    answer_match = re.search(r"<answer>\s*(.*?)\s*(?:</answer>|$)", text, re.S)
+def merge_legacy_to_merged(parsed_legacy):
+    merged = {"Video Quality": parsed_legacy.get("Video Quality", "fail")}
+    for key, legacy_keys in MERGE_GROUPS.items():
+        values = [parsed_legacy.get(legacy_key, "fail") for legacy_key in legacy_keys]
+        if all(value == "yes" for value in values):
+            merged[key] = "yes"
+        elif any(value == "no" for value in values):
+            merged[key] = "no"
+        else:
+            merged[key] = "fail"
+    return merged
+
+
+def parse_output(text: str, metric_keys):
+    text = "" if text is None else str(text)
+    answer_match = re.search(r"<answer>\s*(.*?)\s*(?:</answer>|$)", text, re.S | re.I)
     body = answer_match.group(1).strip() if answer_match else text.strip()
 
-    parsed_old = parse_key_value_pairs(body, OLD_KEYS)
-    return parsed_old
+    parsed = parse_key_value_pairs(body, metric_keys)
+    if metric_keys == MERGED_KEYS and any(parsed.get(key) == "fail" for key in MERGED_KEYS):
+        parsed_legacy = parse_key_value_pairs(body, LEGACY_KEYS)
+        merged_legacy = merge_legacy_to_merged(parsed_legacy)
+        for key in MERGED_KEYS:
+            if parsed.get(key) == "fail":
+                parsed[key] = merged_legacy.get(key, "fail")
+    return parsed
 
 
 def safe_div(a: float, b: float) -> float:
     return a / b if b != 0 else 0.0
 
 
-def calculate_metrics(outputs):
-    stats = {key: defaultdict(int) for key in OLD_KEYS}
+def calculate_metrics(outputs, metric_keys):
+    stats = {key: defaultdict(int) for key in metric_keys}
 
     for item in outputs:
-        pred_dict = parse_output(item["answer"])
-        gt_dict = parse_output(item["ground_truth"])
+        pred_dict = parse_output(item["answer"], metric_keys)
+        gt_dict = parse_output(item["ground_truth"], metric_keys)
 
-        for key in OLD_KEYS:
+        for key in metric_keys:
             p = pred_dict.get(key, "fail")
             g = gt_dict.get(key, "fail")
 
@@ -112,7 +179,7 @@ def calculate_metrics(outputs):
                     s["fail_pred"] += 1
 
     metrics = {}
-    for key in OLD_KEYS:
+    for key in metric_keys:
         s = stats[key]
         acc = safe_div(s["correct"], s["total"])
         prec = safe_div(s["tp"], s["tp"] + s["fp"])
@@ -127,7 +194,7 @@ def calculate_metrics(outputs):
         }
 
     all_fields = ["tp", "tn", "fp", "fn", "correct", "total", "gt_yes", "gt_no", "fail_pred"]
-    summary = {f: sum(metrics[k].get(f, 0) for k in OLD_KEYS) for f in all_fields}
+    summary = {f: sum(metrics[k].get(f, 0) for k in metric_keys) for f in all_fields}
     summary["accuracy"] = safe_div(summary["correct"], summary["total"])
     summary["precision"] = safe_div(summary["tp"], summary["tp"] + summary["fp"])
     summary["recall"] = safe_div(summary["tp"], summary["tp"] + summary["fn"])
@@ -139,10 +206,10 @@ def calculate_metrics(outputs):
     return metrics, summary
 
 
-def print_table(metrics, summary):
+def print_table(metrics, summary, metric_keys):
     header = ["Dimension", "GT(Y/N)", "TP", "TN", "FP", "FN", "Acc", "Prec", "Rec", "F1"]
     rows = []
-    for k in OLD_KEYS:
+    for k in metric_keys:
         m = metrics[k]
         rows.append([
             k[:28],
@@ -221,6 +288,8 @@ def run_eval(args):
     model_name = "-".join(args.model_path.split("/")[1:])
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, f"{model_name}.json")
+    metrics_path = output_path.replace(".json", "_metrics.json")
+    metric_keys = metric_keys_from_schema(args.metric_schema)
     inference_model_path = prepare_inference_model_dir(args.model_path)
 
     results = []
@@ -232,8 +301,20 @@ def run_eval(args):
             except json.JSONDecodeError:
                 print("Warning: JSON file corrupted or empty. Starting from scratch.")
                 results = []
-        metrics, summary = calculate_metrics(results)
-        print_table(metrics, summary)
+        metrics, summary = calculate_metrics(results, metric_keys)
+        print_table(metrics, summary, metric_keys)
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "metric_schema": "legacy" if metric_keys == LEGACY_KEYS else "merged",
+                    "per_dim": metrics,
+                    "overall": summary,
+                },
+                f,
+                indent=4,
+                ensure_ascii=False,
+            )
+        print(f"Metrics saved to {metrics_path}")
         return
 
     llm = LLM(
@@ -280,12 +361,20 @@ def run_eval(args):
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4, ensure_ascii=False)
 
-    metrics, summary = calculate_metrics(results)
-    print_table(metrics, summary)
+    metrics, summary = calculate_metrics(results, metric_keys)
+    print_table(metrics, summary, metric_keys)
 
-    metrics_path = output_path.replace(".json", "_metrics.json")
     with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump({"per_dim": metrics, "overall": summary}, f, indent=4, ensure_ascii=False)
+        json.dump(
+            {
+                "metric_schema": "legacy" if metric_keys == LEGACY_KEYS else "merged",
+                "per_dim": metrics,
+                "overall": summary,
+            },
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
 
     print(f"Metrics saved to {metrics_path}")
 
