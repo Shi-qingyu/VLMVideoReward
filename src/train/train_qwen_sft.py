@@ -142,7 +142,7 @@ def _is_hf_internvl_checkpoint(model_name_or_path: str) -> bool:
     return model_name_or_path.rstrip("/").lower().endswith("-hf")
 
 
-def _token_to_id(tokenizer, token: str) -> int:
+def _token_to_id(tokenizer, token: str, required: bool = True) -> int | None:
     token_id = tokenizer.convert_tokens_to_ids(token)
     if isinstance(token_id, list):
         token_id = token_id[0] if token_id else None
@@ -150,18 +150,23 @@ def _token_to_id(tokenizer, token: str) -> int:
         token_id = tokenizer.encode(token, add_special_tokens=False)
         token_id = token_id[0] if len(token_id) == 1 else None
     if token_id is None:
+        if not required:
+            return None
         raise ValueError(f"Could not resolve tokenizer id for InternVL token: {token}")
     return int(token_id)
 
 
 def _patch_internvl_tokenizer(tokenizer):
-    special_tokens = {
+    required_tokens = {
         "start_image_token": "<img>",
         "end_image_token": "</img>",
         "context_image_token": "<IMG_CONTEXT>",
+    }
+    optional_tokens = {
+        "image_token": "<image>",
         "video_token": "<video>",
     }
-    for attr, fallback in special_tokens.items():
+    for attr, fallback in {**required_tokens, **optional_tokens}.items():
         value = getattr(tokenizer, attr, None) or fallback
         setattr(tokenizer, attr, value)
 
@@ -171,7 +176,10 @@ def _patch_internvl_tokenizer(tokenizer):
         tokenizer,
         tokenizer.context_image_token,
     )
-    tokenizer.video_token_id = _token_to_id(tokenizer, tokenizer.video_token)
+    for attr in optional_tokens:
+        token_id = _token_to_id(tokenizer, getattr(tokenizer, attr), required=False)
+        if token_id is not None:
+            setattr(tokenizer, f"{attr}_id", token_id)
     return tokenizer
 
 
