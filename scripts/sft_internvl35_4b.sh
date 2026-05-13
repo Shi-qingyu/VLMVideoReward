@@ -13,7 +13,7 @@ batch_size=${BATCH_SIZE:-4}
 grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 
 entry_file=${ENTRY_FILE:-"src/train/train_internvl_sft.py"}
-datasets=${DATASETS:-"videoreward_t_merged"}
+datasets=${DATASETS:-"videoreward_merged"}
 
 run_name=${RUN_NAME:-"internvl35-4b-baseline-bs${batch_size}-ga${grad_accum_steps}"}
 output_dir=${OUTPUT_DIR:-"./output/${run_name}"}

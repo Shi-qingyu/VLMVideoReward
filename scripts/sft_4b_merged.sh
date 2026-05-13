@@ -10,7 +10,7 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 deepspeed=./scripts/zero3.json
 
 # Model configuration
-llm=Qwen/Qwen3-VL-2B-Instruct  # Using HuggingFace model ID
+llm=Qwen/Qwen3-VL-4B-Instruct  # Using HuggingFace model ID
 
 # Training hyperparameters
 lr=5e-5
@@ -24,7 +24,7 @@ entry_file=src/train/train_qwen_sft.py
 datasets=videoreward_merged
 
 # Output configuration
-run_name="qwen3vl-2b-baseline-1e-bs4-ga4-merged-457"
+run_name="qwen3vl-4b-baseline-1e-bs4-ga4-merged-457"
 output_dir=./output/${run_name}
 
 # Training arguments
