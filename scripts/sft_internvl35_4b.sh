@@ -40,7 +40,7 @@ args="
     --video_min_frames ${VIDEO_MIN_FRAMES:-10} \
     --eval_strategy no \
     --save_strategy steps \
-    --save_steps ${SAVE_STEPS:-500} \
+    --save_steps ${SAVE_STEPS:-100} \
     --save_total_limit 1 \
     --learning_rate ${lr} \
     --weight_decay 0 \
