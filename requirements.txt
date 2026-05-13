@@ -1,18 +1,41 @@
-# Minimal runtime dependencies (from bagel environment)
-torch==2.6.0
-torchvision==0.21.0
-transformers>=5.5.0
-accelerate==1.12.0
-deepspeed==0.18.7
+# Core training stack from the sqy-rl environment.
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
+transformers==4.57.1
+accelerate==1.13.0
+deepspeed==0.18.8
+flash-attn==2.8.3
+peft==0.18.1
+datasets==4.8.4
 qwen-vl-utils==0.0.14
-datasets==4.6.1
-wandb==0.25.0
-scipy>=1.10
-peft>=0.11
+wandb==0.25.1
+
+# Data, video IO, and checkpoint utilities.
+numpy==1.26.4
+pillow==12.1.1
+decord==0.6.0
+av==17.0.0
+torchcodec==0.7.0
+opencv-python-headless==4.13.0.92
+safetensors==0.7.0
+packaging==25.0
+tqdm==4.67.3
+scipy==1.17.1
+sentencepiece==0.2.1
+
+# Local V-JEPA distillation path.
+einops==0.8.2
+timm==1.0.26
+
+# Evaluation and helper scripts.
+vllm==0.11.0
+openai==2.29.0
+huggingface-hub==0.36.2
+
+# GRPO/DPO trainers import TRL, but it was not present in the pasted env.
 trl>=0.15
 
-# Web demo UI
-# gradio==5.38.2
-
-# Optional acceleration
-# flash-attn==2.5.8
+# Optional tool-only dependencies not present in the pasted env:
+# binpacking
+# sam3
