@@ -6,7 +6,7 @@ NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
 deepspeed=${DEEPSPEED_CONFIG:-"./scripts/zero3.json"}
-llm=${LLM_MODEL:-"OpenGVLab/InternVL3_5-4B"}
+llm=${LLM_MODEL:-"OpenGVLab/InternVL3_5-4B-HF"}
 
 lr=${LR:-"5e-5"}
 batch_size=${BATCH_SIZE:-2}

@@ -29,7 +29,15 @@ sys.path.append(str(project_root))
 from src.train.trainer_sft import replace_qwen3_vl_attention_class
 from src.train.trainer_distill import Qwen3VLDistillationTrainer
 
-from transformers import AutoModel, AutoModelForImageTextToText, Qwen3VLForConditionalGeneration
+from transformers import (
+    AutoConfig,
+    AutoImageProcessor,
+    AutoModel,
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    AutoTokenizer,
+    Qwen3VLForConditionalGeneration,
+)
 from src.dataset.data_processor import make_supervised_data_module
 from src.train.argument import (
     ModelArguments,
@@ -40,7 +48,7 @@ from src.train.checkpoint_utils import (
     filter_state_dict_for_inference,
     strip_distill_only_weights_in_dir,
 )
-from transformers import AutoProcessor, Trainer
+from transformers import Trainer
 
 import contextlib
 from packaging import version
@@ -130,6 +138,101 @@ def _get_nested_attr(obj, path: str):
     return current
 
 
+def _is_hf_internvl_checkpoint(model_name_or_path: str) -> bool:
+    return model_name_or_path.rstrip("/").lower().endswith("-hf")
+
+
+def _token_to_id(tokenizer, token: str) -> int:
+    token_id = tokenizer.convert_tokens_to_ids(token)
+    if isinstance(token_id, list):
+        token_id = token_id[0] if token_id else None
+    if token_id is None or token_id == getattr(tokenizer, "unk_token_id", None):
+        token_id = tokenizer.encode(token, add_special_tokens=False)
+        token_id = token_id[0] if len(token_id) == 1 else None
+    if token_id is None:
+        raise ValueError(f"Could not resolve tokenizer id for InternVL token: {token}")
+    return int(token_id)
+
+
+def _patch_internvl_tokenizer(tokenizer):
+    special_tokens = {
+        "start_image_token": "<img>",
+        "end_image_token": "</img>",
+        "context_image_token": "<IMG_CONTEXT>",
+        "video_token": "<video>",
+    }
+    for attr, fallback in special_tokens.items():
+        value = getattr(tokenizer, attr, None) or fallback
+        setattr(tokenizer, attr, value)
+
+    tokenizer.start_image_token_id = _token_to_id(tokenizer, tokenizer.start_image_token)
+    tokenizer.end_image_token_id = _token_to_id(tokenizer, tokenizer.end_image_token)
+    tokenizer.context_image_token_id = _token_to_id(
+        tokenizer,
+        tokenizer.context_image_token,
+    )
+    tokenizer.video_token_id = _token_to_id(tokenizer, tokenizer.video_token)
+    return tokenizer
+
+
+def _load_processor(model_args, training_args, model_type: str):
+    processor_kwargs = {
+        "cache_dir": training_args.cache_dir,
+        "trust_remote_code": model_type in {"internvl", "minicpmv"},
+    }
+    try:
+        processor = AutoProcessor.from_pretrained(
+            model_args.model_name_or_path,
+            **processor_kwargs,
+        )
+    except AttributeError as exc:
+        if model_type != "internvl" or "start_image_token" not in str(exc):
+            raise
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            trust_remote_code=True,
+        )
+        tokenizer = _patch_internvl_tokenizer(tokenizer)
+        try:
+            processor = AutoProcessor.from_pretrained(
+                model_args.model_name_or_path,
+                tokenizer=tokenizer,
+                **processor_kwargs,
+            )
+        except AttributeError as second_exc:
+            if "start_image_token" not in str(second_exc):
+                raise
+            from transformers import AutoVideoProcessor
+            from transformers.models.internvl.processing_internvl import InternVLProcessor
+
+            config = AutoConfig.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                trust_remote_code=True,
+            )
+            image_processor = AutoImageProcessor.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                trust_remote_code=True,
+            )
+            video_processor = AutoVideoProcessor.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                trust_remote_code=True,
+            )
+            processor = InternVLProcessor(
+                image_processor=image_processor,
+                tokenizer=tokenizer,
+                video_processor=video_processor,
+                image_seq_length=int(getattr(config, "image_seq_length", 256)),
+            )
+
+    if model_type == "internvl":
+        _patch_internvl_tokenizer(processor.tokenizer)
+    return processor
+
+
 def _set_module_trainable(module, trainable: bool) -> None:
     if module is None:
         return
@@ -173,9 +276,18 @@ def set_model(training_args, model, model_type: str):
         ]
         language_modules = [_get_nested_attr(model, "model.language_model")]
     elif model_type == "internvl":
-        vision_modules = [_get_nested_attr(model, "vision_model")]
-        projector_modules = [_get_nested_attr(model, "mlp1")]
-        language_modules = [_get_nested_attr(model, "language_model")]
+        vision_modules = [
+            _get_nested_attr(model, "vision_model"),
+            _get_nested_attr(model, "model.vision_tower"),
+        ]
+        projector_modules = [
+            _get_nested_attr(model, "mlp1"),
+            _get_nested_attr(model, "model.multi_modal_projector"),
+        ]
+        language_modules = [
+            _get_nested_attr(model, "language_model"),
+            _get_nested_attr(model, "model.language_model"),
+        ]
     elif model_type == "minicpmv":
         vision_modules = [_get_nested_attr(model, "vpm")]
         projector_modules = [_get_nested_attr(model, "resampler")]
@@ -210,19 +322,35 @@ def _load_model(model_args, training_args, model_type: str, attn_implementation:
             torch_dtype=torch_dtype,
         )
 
-    if model_type in {"internvl", "minicpmv"}:
+    if model_type == "internvl":
+        if _is_hf_internvl_checkpoint(model_args.model_name_or_path):
+            return AutoModelForImageTextToText.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                trust_remote_code=True,
+                attn_implementation=attn_implementation,
+                torch_dtype=torch_dtype,
+            )
+
+        return AutoModel.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            trust_remote_code=True,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            use_flash_attn=attn_implementation == "flash_attention_2",
+        )
+
+    if model_type == "minicpmv":
         model_kwargs = {
             "cache_dir": training_args.cache_dir,
             "trust_remote_code": True,
             "torch_dtype": torch_dtype,
             "low_cpu_mem_usage": True,
         }
-        if model_type == "internvl":
-            model_kwargs["use_flash_attn"] = attn_implementation == "flash_attention_2"
-        else:
-            model_kwargs["attn_implementation"] = (
-                "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
-            )
+        model_kwargs["attn_implementation"] = (
+            "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
+        )
         return AutoModel.from_pretrained(
             model_args.model_name_or_path,
             **model_kwargs,
@@ -233,6 +361,8 @@ def _load_model(model_args, training_args, model_type: str, attn_implementation:
 
 def _prepare_processor(processor, model, model_type: str) -> None:
     tokenizer = processor.tokenizer
+    if model_type == "internvl":
+        _patch_internvl_tokenizer(tokenizer)
     if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -294,13 +424,20 @@ def train(attn_implementation="flash_attention_2"):
         model_type=model_type,
         attn_implementation=attn_implementation,
     )
+    setattr(
+        data_args,
+        "internvl_use_image_flags",
+        bool(
+            model_type == "internvl"
+            and (
+                hasattr(model, "img_context_token_id")
+                or _get_nested_attr(model, "vision_model") is not None
+            )
+        ),
+    )
 
     print(f'the initlized model is {model_args.model_name_or_path} the class is {model.__class__.__name__}')
-    processor = AutoProcessor.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        trust_remote_code=model_type in {"internvl", "minicpmv"},
-    )
+    processor = _load_processor(model_args, training_args, model_type)
     processor.tokenizer.model_max_length = training_args.model_max_length
     _prepare_processor(processor, model, model_type)
 
@@ -335,8 +472,9 @@ def train(attn_implementation="flash_attention_2"):
         set_model(training_args, model, model_type=model_type)
 
         if is_rank0_or_single_process():
-            if hasattr(model.model, "print_trainable_parameters"):
-                model.model.print_trainable_parameters()
+            inner_model = getattr(model, "model", model)
+            if hasattr(inner_model, "print_trainable_parameters"):
+                inner_model.print_trainable_parameters()
             _print_trainable_summary(model)
 
     if training_args.distill_enable and not training_args.tune_mm_vision:

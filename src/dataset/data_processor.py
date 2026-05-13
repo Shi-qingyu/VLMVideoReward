@@ -854,7 +854,11 @@ class LazySupervisedDataset(Dataset):
                 self.processor,
                 self.data_args.using_cot,
             )
-            if self.model_type == "internvl" and "pixel_values" in data_dict:
+            if (
+                self.model_type == "internvl"
+                and getattr(self.data_args, "internvl_use_image_flags", False)
+                and "pixel_values" in data_dict
+            ):
                 data_dict["image_flags"] = torch.ones(
                     data_dict["pixel_values"].shape[0],
                     1,
