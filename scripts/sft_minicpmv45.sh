@@ -9,11 +9,11 @@ deepspeed=${DEEPSPEED_CONFIG:-"./scripts/zero3.json"}
 llm=${LLM_MODEL:-"openbmb/MiniCPM-V-4_5"}
 
 lr=${LR:-"5e-5"}
-batch_size=${BATCH_SIZE:-1}
-grad_accum_steps=${GRAD_ACCUM_STEPS:-16}
+batch_size=${BATCH_SIZE:-2}
+grad_accum_steps=${GRAD_ACCUM_STEPS:-8}
 
 entry_file=${ENTRY_FILE:-"src/train/train_minicpmv_sft.py"}
-datasets=${DATASETS:-"videoreward_t_merged"}
+datasets=${DATASETS:-"videoreward_merged"}
 
 run_name=${RUN_NAME:-"minicpmv45-baseline-bs${batch_size}-ga${grad_accum_steps}"}
 output_dir=${OUTPUT_DIR:-"./output/${run_name}"}
