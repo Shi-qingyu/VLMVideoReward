@@ -6,6 +6,11 @@ VIDEOREWARD = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_MERGED = {
+    "annotation_path": "./data/train_merged.json",
+    "data_path": "./data",
+}
+
 VIDEOREWARD_T = {
     "annotation_path": "./data/train_t.json",
     "data_path": "./data",
@@ -57,6 +62,7 @@ data_dict = {
     "videoreward_eval": VIDEOREWARD_EVAL,
     "videoreward_polished": VIDEOREWARD_POLISHED,
     "videoreward_t_polished_v3": VIDEOREWARD_T_POLISHED_V3,
+    "videoreward_merged": VIDEOREWARD_MERGED,
     "videoreward_t_merged": VIDEOREWARD_T_MERGED,
     "videoreward_box_t_polished_v3": VIDEOREWARD_BOX_T_POLISHED_V3,
     "videoreward_box_t_polished_v3_single": VIDEOREWARD_BOX_T_POLISHED_V3_SINGLE,
