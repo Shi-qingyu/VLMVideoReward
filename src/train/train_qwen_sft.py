@@ -245,11 +245,18 @@ def _set_modules_trainable(modules, trainable: bool) -> None:
         _set_module_trainable(module, trainable)
 
 
+def _parameter_numel(param: torch.nn.Parameter) -> int:
+    ds_numel = getattr(param, "ds_numel", None)
+    if ds_numel is not None:
+        return int(ds_numel)
+    return int(param.numel())
+
+
 def _print_trainable_summary(model) -> None:
     trainable = 0
     total = 0
     for param in model.parameters():
-        count = param.numel()
+        count = _parameter_numel(param)
         total += count
         if param.requires_grad:
             trainable += count
