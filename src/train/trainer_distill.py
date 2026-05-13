@@ -31,10 +31,11 @@ class Qwen3VLDistillationTrainer(Trainer):
         self._last_task_loss: Optional[torch.Tensor] = None
         self._last_logged_step = -1
         self._last_distill_visualize_step: Optional[int] = None
+        image_processor = getattr(self.processing_class, "image_processor", None)
+        self.visual_merge_size = int(getattr(image_processor, "merge_size", 2))
 
         if not self.distill_enabled:
             self.teacher_encoder = None
-            self.visual_merge_size = 2
             return
 
         teacher_arch = getattr(self.args, "distill_teacher_arch")
@@ -63,9 +64,6 @@ class Qwen3VLDistillationTrainer(Trainer):
             student_dim=student_dim,
             teacher_dim=self.teacher_encoder.teacher_dim,
         )
-
-        image_processor = getattr(self.processing_class, "image_processor", None)
-        self.visual_merge_size = int(getattr(image_processor, "merge_size", 2))
 
     def _current_distill_weight(self) -> float:
         base_weight = float(getattr(self.args, "distill_weight", 0.0))
@@ -196,9 +194,10 @@ class Qwen3VLDistillationTrainer(Trainer):
         inputs: dict[str, Any],
         distill_video_paths,
     ) -> bool:
-        if not bool(getattr(self.args, "distill_visualize", False)):
-            return False
-        if not self.distill_enabled:
+        if not (
+            bool(getattr(self.args, "distill_visualize", False))
+            or bool(getattr(self.args, "visual_tokenizer_visualize", False))
+        ):
             return False
         if not self.is_world_process_zero():
             return False
@@ -206,7 +205,15 @@ class Qwen3VLDistillationTrainer(Trainer):
         if self._last_distill_visualize_step == step:
             return False
 
-        visualize_steps = int(getattr(self.args, "distill_visualize_steps", 0))
+        visualize_steps = int(
+            getattr(
+                self.args,
+                "visual_tokenizer_visualize_steps",
+                getattr(self.args, "distill_visualize_steps", 0),
+            )
+        )
+        if visualize_steps <= 0:
+            visualize_steps = int(getattr(self.args, "distill_visualize_steps", 0))
         if visualize_steps <= 0:
             if self._last_distill_visualize_step is not None:
                 return False
@@ -248,9 +255,16 @@ class Qwen3VLDistillationTrainer(Trainer):
         if video_result is None:
             return
 
-        output_dir = getattr(self.args, "distill_visualize_dir", None)
+        output_dir = getattr(self.args, "visual_tokenizer_visualize_dir", None)
         if not output_dir:
-            output_dir = str(Path(self.args.output_dir) / "distill_visualizations")
+            output_dir = getattr(self.args, "distill_visualize_dir", None)
+        if not output_dir:
+            dirname = (
+                "distill_visualizations"
+                if bool(getattr(self.args, "distill_visualize", False))
+                else "visual_tokenizer_visualizations"
+            )
+            output_dir = str(Path(self.args.output_dir) / dirname)
 
         step = int(getattr(self.state, "global_step", 0))
         self._last_distill_visualize_step = step
@@ -264,16 +278,30 @@ class Qwen3VLDistillationTrainer(Trainer):
                 distill_video_metadatas=distill_video_metadatas,
                 feature_source=getattr(self.args, "distill_feature_source", "visual"),
                 merge_size=self.visual_merge_size,
-                max_items=int(getattr(self.args, "distill_visualize_max_items", 1)),
-                max_frames=int(getattr(self.args, "distill_visualize_max_frames", 0)),
+                max_items=int(
+                    getattr(
+                        self.args,
+                        "visual_tokenizer_visualize_max_items",
+                        getattr(self.args, "distill_visualize_max_items", 1),
+                    )
+                    or getattr(self.args, "distill_visualize_max_items", 1)
+                ),
+                max_frames=int(
+                    getattr(
+                        self.args,
+                        "visual_tokenizer_visualize_max_frames",
+                        getattr(self.args, "distill_visualize_max_frames", 0),
+                    )
+                    or getattr(self.args, "distill_visualize_max_frames", 0)
+                ),
             )
         except Exception:
-            logger.exception("Failed to save Qwen3VL visual PCA distillation preview.")
+            logger.exception("Failed to save visual tokenizer PCA preview.")
             return
 
         if saved_paths:
             logger.info(
-                "Saved Qwen3VL visual PCA distillation preview for step %s to %s",
+                "Saved visual tokenizer PCA preview for step %s to %s",
                 step,
                 output_dir,
             )

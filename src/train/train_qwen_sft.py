@@ -38,7 +38,7 @@ from transformers import (
     AutoTokenizer,
     Qwen3VLForConditionalGeneration,
 )
-from src.dataset.data_processor import make_supervised_data_module
+from src.dataset.data_processor import IGNORE_INDEX, make_supervised_data_module
 from src.train.argument import (
     ModelArguments,
     DataArguments,
@@ -281,6 +281,163 @@ def _print_trainable_summary(model) -> None:
         f"Trainable parameters: {trainable:,} / {total:,} "
         f"({ratio:.4f}%)"
     )
+
+
+def _truncate_for_dump(text: str, max_chars: int = 20000) -> str:
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    omitted = len(text) - max_chars
+    return (
+        text[:half]
+        + f"\n\n... <truncated {omitted} chars> ...\n\n"
+        + text[-half:]
+    )
+
+
+def _decode_token_ids(tokenizer, token_ids) -> str:
+    if torch.is_tensor(token_ids):
+        token_ids = token_ids.detach().cpu().tolist()
+    return tokenizer.decode(
+        [int(token_id) for token_id in token_ids],
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+
+
+def _tensor_summary(value) -> str:
+    if torch.is_tensor(value):
+        return (
+            f"Tensor(shape={tuple(value.shape)}, dtype={value.dtype}, "
+            f"device={value.device})"
+        )
+    if isinstance(value, list):
+        preview = value[:2]
+        return f"list(len={len(value)}, preview={preview})"
+    if isinstance(value, tuple):
+        preview = value[:2]
+        return f"tuple(len={len(value)}, preview={preview})"
+    if isinstance(value, dict):
+        return f"dict(keys={list(value)})"
+    return repr(value)
+
+
+def _batch_index_value(value, index: int, batch_size: int):
+    if isinstance(value, list) and len(value) == batch_size:
+        return value[index]
+    if isinstance(value, tuple) and len(value) == batch_size:
+        return value[index]
+    return value
+
+
+def _has_complete_response(text: str) -> bool:
+    return all(
+        tag in text
+        for tag in ("<think>", "</think>", "<answer>", "</answer>")
+    )
+
+
+def _dump_first_train_batch(trainer, tokenizer, training_args) -> None:
+    if not bool(getattr(training_args, "dump_first_batch", True)):
+        return
+    if not trainer.is_world_process_zero():
+        return
+
+    dump_file = Path(getattr(training_args, "first_batch_dump_file", "first_train_batch.txt"))
+    if not dump_file.is_absolute():
+        dump_file = Path(training_args.output_dir) / dump_file
+    dump_file.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "First training batch debug dump",
+        f"output_dir: {training_args.output_dir}",
+        f"model_max_length: {getattr(tokenizer, 'model_max_length', 'N/A')}",
+        f"pad_token_id: {getattr(tokenizer, 'pad_token_id', None)}",
+        f"eos_token_id: {getattr(tokenizer, 'eos_token_id', None)}",
+        "",
+    ]
+
+    incomplete_examples = []
+    try:
+        train_dataloader = trainer.get_train_dataloader()
+        batch = next(iter(train_dataloader))
+        lines.append("Batch fields:")
+        for key in sorted(batch):
+            lines.append(f"  - {key}: {_tensor_summary(batch[key])}")
+        lines.append("")
+
+        input_ids = batch.get("input_ids")
+        labels = batch.get("labels")
+        attention_mask = batch.get("attention_mask")
+        if not torch.is_tensor(input_ids) or not torch.is_tensor(labels):
+            lines.append("input_ids/labels are missing or are not tensors; cannot decode batch.")
+        else:
+            batch_size = int(input_ids.shape[0]) if input_ids.dim() > 1 else 1
+            input_ids = input_ids if input_ids.dim() > 1 else input_ids.unsqueeze(0)
+            labels = labels if labels.dim() > 1 else labels.unsqueeze(0)
+            if torch.is_tensor(attention_mask) and attention_mask.dim() == 1:
+                attention_mask = attention_mask.unsqueeze(0)
+
+            for index in range(batch_size):
+                sample_input_ids = input_ids[index].detach().cpu()
+                sample_labels = labels[index].detach().cpu()
+                if torch.is_tensor(attention_mask):
+                    sample_mask = attention_mask[index].detach().cpu().bool()
+                else:
+                    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+                    sample_mask = (
+                        sample_input_ids.ne(pad_token_id)
+                        if pad_token_id is not None
+                        else torch.ones_like(sample_input_ids, dtype=torch.bool)
+                    )
+
+                effective_input_ids = sample_input_ids[sample_mask]
+                supervised_ids = sample_labels[sample_labels.ne(IGNORE_INDEX)]
+                supervised_text = _decode_token_ids(tokenizer, supervised_ids)
+                complete_response = _has_complete_response(supervised_text)
+                try:
+                    model_max_length = int(getattr(tokenizer, "model_max_length"))
+                except Exception:
+                    model_max_length = 10**18
+                if not complete_response:
+                    incomplete_examples.append(index)
+
+                lines.extend(
+                    [
+                        "=" * 100,
+                        f"Example {index}",
+                        f"input_token_count: {int(sample_mask.sum().item())}",
+                        f"supervised_token_count: {int(supervised_ids.numel())}",
+                        (
+                            "hit_model_max_length_or_truncated: "
+                            f"{int(sample_mask.sum().item()) >= model_max_length}"
+                        ),
+                        f"complete_think_answer_labels: {complete_response}",
+                        f"distill_image_paths: {_batch_index_value(batch.get('distill_image_paths'), index, batch_size)}",
+                        f"distill_video_paths: {_batch_index_value(batch.get('distill_video_paths'), index, batch_size)}",
+                        "",
+                        "[SUPERVISED LABEL TEXT: labels != -100]",
+                        _truncate_for_dump(supervised_text),
+                        "",
+                        "[FULL INPUT TEXT]",
+                        _truncate_for_dump(_decode_token_ids(tokenizer, effective_input_ids)),
+                        "",
+                    ]
+                )
+
+    except Exception as exc:
+        logging.exception("Failed to dump first training batch.")
+        lines.append(f"ERROR while dumping first training batch: {type(exc).__name__}: {exc}")
+
+    dump_file.write_text("\n".join(lines), encoding="utf-8")
+    logging.info("Saved first training batch debug dump to %s", dump_file)
+    if incomplete_examples:
+        logging.warning(
+            "First training batch has examples without complete <think>/<answer> labels: %s. "
+            "Check %s",
+            incomplete_examples,
+            dump_file,
+        )
 
 
 def set_model(training_args, model, model_type: str):
@@ -530,10 +687,10 @@ def train(attn_implementation="flash_attention_2"):
         )
     
     data_module = make_supervised_data_module(processor, data_args=data_args)
-    trainer_cls = Qwen3VLDistillationTrainer if training_args.distill_enable else Trainer
-    trainer = trainer_cls(
+    trainer = Qwen3VLDistillationTrainer(
         model=model, processing_class=processor, args=training_args, **data_module
     )
+    _dump_first_train_batch(trainer, processor.tokenizer, training_args)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         logging.info("checkpoint found, resume training")

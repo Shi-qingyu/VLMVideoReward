@@ -53,6 +53,15 @@ class SFTArguments(transformers.TrainingArguments):
     lora_alpha: int = field(default=128)
     lora_dropout: float = field(default=0.0)
 
+    # Debugging / visualization
+    dump_first_batch: bool = field(default=True)
+    first_batch_dump_file: str = field(default="first_train_batch.txt")
+    visual_tokenizer_visualize: bool = field(default=False)
+    visual_tokenizer_visualize_dir: Optional[str] = field(default=None)
+    visual_tokenizer_visualize_steps: int = field(default=0)
+    visual_tokenizer_visualize_max_items: int = field(default=1)
+    visual_tokenizer_visualize_max_frames: int = field(default=0)
+
     # Visual distillation config
     distill_enable: bool = field(default=False)
     distill_teacher_arch: str = field(default="vjepa2_1_vit_large_384")

@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 
+import torch
 from transformers import (
     AutoConfig,
     AutoImageProcessor,
@@ -10,6 +11,8 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoVideoProcessor,
+    StoppingCriteria,
+    StoppingCriteriaList,
 )
 
 from src.train.checkpoint_utils import prepare_inference_model_dir
@@ -51,9 +54,13 @@ def parse_args():
         default=os.environ.get("MODEL_TYPE", "auto"),
         choices=["auto", "qwen3vl", "qwen2.5vl", "qwen2vl", "internvl", "gemma4", "minicpmv"],
     )
-    parser.add_argument("--max_new_tokens", type=int, default=1024)
+    parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--model_max_length", type=int, default=8192)
     parser.add_argument("--dtype", default="auto")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--repetition_penalty", type=float, default=1.05)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     parser.add_argument("--video_max_frames", type=int, default=8)
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
@@ -63,6 +70,22 @@ def parse_args():
         default=os.environ.get("ATTN_IMPLEMENTATION"),
     )
     return parser.parse_args()
+
+
+class StopSequenceCriteria(StoppingCriteria):
+    def __init__(self, stop_sequences: list[list[int]]):
+        self.stop_sequences = [seq for seq in stop_sequences if seq]
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        for seq in self.stop_sequences:
+            seq_len = len(seq)
+            if input_ids.shape[-1] < seq_len:
+                continue
+            stop_ids = torch.tensor(seq, device=input_ids.device, dtype=input_ids.dtype)
+            matches = input_ids[:, -seq_len:].eq(stop_ids).all(dim=-1)
+            if matches.all():
+                return True
+        return False
 
 
 def first_int(value):
@@ -343,6 +366,76 @@ def build_template_kwargs(model_type: str, args):
     }
 
 
+def token_ids_for_text(tokenizer, text: str) -> list[int]:
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    return token_ids if token_ids else []
+
+
+def collect_eos_token_ids(tokenizer) -> list[int]:
+    eos_ids: list[int] = []
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos_token_id, int):
+        eos_ids.append(eos_token_id)
+    elif isinstance(eos_token_id, (list, tuple)):
+        eos_ids.extend(token_id for token_id in eos_token_id if isinstance(token_id, int))
+
+    for token in ("<|im_end|>", "</s>", getattr(tokenizer, "eos_token", None)):
+        if token is None:
+            continue
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if isinstance(token_id, int) and token_id != getattr(tokenizer, "unk_token_id", None):
+            eos_ids.append(token_id)
+
+    return sorted(set(eos_ids))
+
+
+def build_stopping_criteria(tokenizer) -> StoppingCriteriaList:
+    stop_sequences = [
+        token_ids_for_text(tokenizer, "</answer>"),
+        token_ids_for_text(tokenizer, "<|im_end|>"),
+    ]
+    return StoppingCriteriaList([StopSequenceCriteria(stop_sequences)])
+
+
+def build_generation_kwargs(tokenizer, args):
+    generation_kwargs = {
+        "max_new_tokens": args.max_new_tokens,
+        "do_sample": args.temperature > 0,
+        "pad_token_id": tokenizer.pad_token_id,
+        "repetition_penalty": args.repetition_penalty,
+        "stopping_criteria": build_stopping_criteria(tokenizer),
+    }
+
+    eos_token_ids = collect_eos_token_ids(tokenizer)
+    if eos_token_ids:
+        generation_kwargs["eos_token_id"] = eos_token_ids
+
+    if args.temperature > 0:
+        generation_kwargs["temperature"] = args.temperature
+        generation_kwargs["top_p"] = args.top_p
+    if args.no_repeat_ngram_size > 0:
+        generation_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram_size
+
+    return generation_kwargs
+
+
+def trim_repeated_response(text: str) -> str:
+    answer_end = text.find("</answer>")
+    if answer_end >= 0:
+        return text[: answer_end + len("</answer>")].strip()
+
+    first_think_end = text.find("</think>")
+    second_think_start = text.find("<think>", first_think_end + len("</think>"))
+    if first_think_end >= 0 and second_think_start >= 0:
+        return text[:second_think_start].strip()
+
+    dangling_think = text.find("\n</think>", first_think_end + len("</think>"))
+    if first_think_end >= 0 and dangling_think >= 0:
+        return text[:dangling_think].strip()
+
+    return text.strip()
+
+
 def main():
     args = parse_args()
     inference_model_path = prepare_inference_model_dir(args.model_path)
@@ -377,7 +470,8 @@ def main():
     )
     inputs = inputs.to(model.device)
 
-    generated_ids = model.generate(**inputs, max_new_tokens=args.max_new_tokens)
+    generation_kwargs = build_generation_kwargs(processor.tokenizer, args)
+    generated_ids = model.generate(**inputs, **generation_kwargs)
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
@@ -386,7 +480,7 @@ def main():
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
-    print(output_text[0])
+    print(trim_repeated_response(output_text[0]))
 
 
 if __name__ == "__main__":
