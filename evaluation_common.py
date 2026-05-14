@@ -76,7 +76,7 @@ def add_common_eval_args(parser: argparse.ArgumentParser):
         default="auto",
         help="auto uses each model-specific script's default backend.",
     )
-    parser.add_argument("--dataset_use", type=str, default="videoreward_eval_polished_v3")
+    parser.add_argument("--dataset_use", type=str, default="videoreward_eval_merged")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
     parser.add_argument("--model_max_length", type=int, default=8192)
