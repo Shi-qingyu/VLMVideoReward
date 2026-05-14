@@ -1,0 +1,23 @@
+import argparse
+import multiprocessing as mp
+
+from evaluation_common import add_common_eval_args, run_eval
+
+
+QWEN_MODEL_TYPES = {"qwen3vl", "qwen2.5vl", "qwen2vl"}
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Evaluate Qwen-VL checkpoints.")
+    parser.add_argument(
+        "--model_type",
+        default="auto",
+        choices=["auto", "qwen3vl", "qwen2.5vl", "qwen2vl"],
+    )
+    add_common_eval_args(parser)
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
+    run_eval(get_args(), allowed_model_types=QWEN_MODEL_TYPES, default_backend="vllm")
