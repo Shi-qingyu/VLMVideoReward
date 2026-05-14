@@ -388,36 +388,44 @@ def build_video_content_kwargs(model_type: str, args) -> dict:
 
 
 def sanitize_molmo2_pooling_indices(inputs):
-    for pooling_key, pixel_key in (
-        ("image_token_pooling", "pixel_values"),
-        ("video_token_pooling", "pixel_values_videos"),
+    pooling = inputs.get("video_token_pooling")
+    pixel_values = inputs.get("pixel_values_videos")
+    video_grids = inputs.get("video_grids")
+    if (
+        not torch.is_tensor(pooling)
+        or not torch.is_tensor(pixel_values)
+        or not torch.is_tensor(video_grids)
     ):
-        pooling = inputs.get(pooling_key)
-        pixel_values = inputs.get(pixel_key)
-        if not torch.is_tensor(pooling) or not torch.is_tensor(pixel_values):
-            continue
-        if pixel_values.dim() < 2 or pixel_values.shape[1] <= 0:
-            continue
+        return inputs
+    if pixel_values.dim() != 3 or pixel_values.shape[1] <= 0:
+        return inputs
 
-        patch_count = int(pixel_values.shape[1])
-        valid_positive = pooling.ge(0)
-        overflow = valid_positive & pooling.ge(patch_count)
-        if not bool(overflow.any().item()):
-            continue
+    valid_positive = pooling.ge(0)
+    if not bool(valid_positive.any().item()):
+        return inputs
 
-        fixed_pooling = torch.where(
-            overflow,
-            pooling.remainder(patch_count),
-            pooling,
-        )
-        inputs[pooling_key] = fixed_pooling
-        print(
-            f"Adjusted Molmo2 {pooling_key}: "
-            f"max index {int(pooling[valid_positive].max().item())} -> "
-            f"{int(fixed_pooling[fixed_pooling.ge(0)].max().item())}, "
-            f"patch_count={patch_count}"
-        )
+    patches_per_frame = int(pixel_values.shape[1])
+    if video_grids.numel() > 0:
+        max_frames_per_video = int(video_grids[:, 0].max().item())
+    else:
+        max_frames_per_video = int(pixel_values.shape[0])
+    index_limit = max(max_frames_per_video * patches_per_frame, patches_per_frame)
+    max_index = int(pooling[valid_positive].max().item())
 
+    if max_index < index_limit:
+        return inputs
+
+    fixed_pooling = torch.where(
+        valid_positive,
+        pooling.clamp(max=index_limit - 1),
+        pooling,
+    )
+    inputs["video_token_pooling"] = fixed_pooling
+    print(
+        f"Clamped Molmo2 video_token_pooling: "
+        f"max index {max_index} -> {int(fixed_pooling[fixed_pooling.ge(0)].max().item())}, "
+        f"index_limit={index_limit}"
+    )
     return inputs
 
 
