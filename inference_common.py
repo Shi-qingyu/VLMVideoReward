@@ -15,14 +15,12 @@ from transformers import (
 )
 
 
-DEFAULT_VIDEO_PATH = "data/videos/eval_0/0.mp4"
-DEFAULT_VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "1"))
+DEFAULT_VIDEO_PATH = "data/videos/eval_0/1.mp4"
+DEFAULT_VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "2"))
 DEFAULT_PROMPT = (
-    "A Black man in a short-sleeve shirt stands at a kitchen stove. He holds a box "
-    "of dry pasta in one hand and pours the pasta into a pot of boiling water. "
-    "Using a wooden spoon, he gently presses the pasta down to ensure it is fully "
-    "submerged. The background shows kitchen counters and utensils. The camera "
-    "remains steady, focusing on the man's hands and the pot."
+    "A young Black man with a beard walks through an aisle of a brightly lit toy store, surrounded by colorful shelves. "
+    "He pauses in front of a shelf displaying puzzle sets, picks up a puzzle set in both hands, examines the pieces closely, "
+    "and smiles at the memories of his own childhood. The camera remains steady, capturing his actions and the vibrant store setting."
 )
 QUESTION_TEMPLATE = (
     "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\n"
