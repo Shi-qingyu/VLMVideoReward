@@ -16,13 +16,12 @@ from transformers import AutoProcessor
 from inference import (
     build_generation_kwargs,
     build_template_kwargs,
-    configure_molmo2_processor,
     configure_internvl_processor,
     infer_model_type,
     load_model,
     load_processor,
+    normalize_molmo2_messages,
     prepare_processor,
-    sanitize_molmo2_pooling_indices,
     trim_repeated_response,
 )
 
@@ -99,7 +98,7 @@ def get_args():
     parser.add_argument(
         "--device_map",
         default=os.environ.get("DEVICE_MAP", "auto"),
-        help="Device map for HF model loading. For Molmo2, auto defaults to single-device loading.",
+        help="Device map for HF model loading.",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
@@ -469,6 +468,8 @@ def run_eval_vllm(args, inference_model_path, output_path):
 
 
 def generate_hf_one(model, processor, model_type: str, args, messages):
+    if model_type == "molmo2":
+        messages = normalize_molmo2_messages(messages)
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -477,8 +478,6 @@ def generate_hf_one(model, processor, model_type: str, args, messages):
         return_tensors="pt",
         **build_template_kwargs(model_type, args),
     )
-    if model_type == "molmo2":
-        inputs = sanitize_molmo2_pooling_indices(inputs)
     inputs = inputs.to(model.device)
 
     generated_ids = model.generate(
@@ -508,8 +507,6 @@ def run_eval_hf(args, inference_model_path, model_type: str, output_path):
     prepare_processor(processor, model, model_type, args.model_max_length)
     if model_type == "internvl":
         configure_internvl_processor(processor, model, args)
-    if model_type == "molmo2":
-        configure_molmo2_processor(processor, args)
 
     dataloader = build_dataloader(processor, args)
 

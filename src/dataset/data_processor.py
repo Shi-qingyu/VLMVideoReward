@@ -1013,7 +1013,7 @@ def preprocess_qwen_visual(
     return full_result
 
 
-def preprocess_gemma4_visual(
+def preprocess_hf_chat_visual(
     sources,
     processor,
     using_cot: bool = True,
@@ -1093,13 +1093,13 @@ def _build_hf_chat_template_kwargs(data_args) -> Dict[str, Any]:
     return kwargs
 
 
-def preprocess_hf_chat_visual(
+def preprocess_gemma4_visual(
     sources,
     processor,
     using_cot: bool = True,
     data_args=None,
 ) -> Dict:
-    return preprocess_gemma4_visual(sources, processor, using_cot, data_args)
+    return preprocess_hf_chat_visual(sources, processor, using_cot, data_args)
 
 
 def _build_minicpmv_messages_and_images(

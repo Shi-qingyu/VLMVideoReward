@@ -70,7 +70,7 @@ def parse_args():
     parser.add_argument(
         "--device_map",
         default=os.environ.get("DEVICE_MAP", "auto"),
-        help="Device map for model loading. For Molmo2, auto defaults to single-device loading.",
+        help="Device map for model loading.",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
@@ -247,10 +247,6 @@ def load_processor(model_path: str, model_type: str):
     return processor
 
 
-def default_torch_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 def load_model(
     model_path: str,
     model_type: str,
@@ -258,24 +254,18 @@ def load_model(
     attn_implementation: str | None,
     device_map: str | None = "auto",
 ):
-    use_single_device = model_type == "molmo2" and device_map in {None, "", "auto"}
     model_kwargs = {
         "dtype": dtype,
         "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"},
     }
-    if not use_single_device and device_map not in {None, "", "none"}:
+    if device_map not in {None, "", "none"}:
         model_kwargs["device_map"] = device_map
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
 
     if model_type == "internvl" and not is_hf_internvl_checkpoint(model_path):
-        model = AutoModel.from_pretrained(model_path, **model_kwargs)
-    else:
-        model = AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs)
-
-    if use_single_device:
-        model = model.to(default_torch_device())
-    return model.eval()
+        return AutoModel.from_pretrained(model_path, **model_kwargs).eval()
+    return AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs).eval()
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
@@ -342,106 +332,46 @@ def configure_internvl_processor(processor, model, args):
             video_processor.fps = None
 
 
-def set_square_size(component, image_size: int | None):
-    if component is not None and image_size is not None and hasattr(component, "size"):
-        component.size = {"height": int(image_size), "width": int(image_size)}
-
-
-def configure_molmo2_processor(processor, args):
-    image_size = int(args.molmo2_image_size) if args.molmo2_image_size else None
-    set_square_size(getattr(processor, "image_processor", None), image_size)
-    video_processor = getattr(processor, "video_processor", None)
-    set_square_size(video_processor, image_size)
-
-    if video_processor is None:
-        return
-    if hasattr(video_processor, "min_frames"):
-        video_processor.min_frames = int(args.video_max_frames)
-    if hasattr(video_processor, "max_frames"):
-        video_processor.max_frames = int(args.video_max_frames)
-    if hasattr(video_processor, "num_frames"):
-        video_processor.num_frames = int(args.video_max_frames)
-    if hasattr(video_processor, "frame_sample_mode"):
-        video_processor.frame_sample_mode = args.molmo2_video_frame_sampling_mode
-    if hasattr(video_processor, "frame_sampling_mode"):
-        video_processor.frame_sampling_mode = args.molmo2_video_frame_sampling_mode
-    if hasattr(video_processor, "max_fps"):
-        video_fps = getattr(args, "video_fps", None)
-        video_processor.max_fps = float(video_fps) if video_fps and video_fps > 0 else None
-    if hasattr(video_processor, "fps"):
-        video_fps = getattr(args, "video_fps", None)
-        video_processor.fps = float(video_fps) if video_fps and video_fps > 0 else None
-
-
 def build_video_content_kwargs(model_type: str, args) -> dict:
-    if model_type != "molmo2":
-        return {}
-
-    kwargs = {}
-    if args.molmo2_video_frame_sampling_mode:
-        kwargs["frame_sampling_mode"] = args.molmo2_video_frame_sampling_mode
-    if args.video_max_frames is not None:
-        kwargs["num_frames"] = int(args.video_max_frames)
-    if getattr(args, "video_fps", None) is not None and args.video_fps > 0:
-        kwargs["max_fps"] = float(args.video_fps)
-    return kwargs
+    return {}
 
 
-def sanitize_molmo2_pooling_indices(inputs):
-    pooling = inputs.get("video_token_pooling")
-    pixel_values = inputs.get("pixel_values_videos")
-    video_grids = inputs.get("video_grids")
-    if (
-        not torch.is_tensor(pooling)
-        or not torch.is_tensor(pixel_values)
-        or not torch.is_tensor(video_grids)
-    ):
-        return inputs
-    if pixel_values.dim() != 3 or pixel_values.shape[1] <= 0:
-        return inputs
-
-    valid_positive = pooling.ge(0)
-    if not bool(valid_positive.any().item()):
-        return inputs
-
-    patches_per_frame = int(pixel_values.shape[1])
-    if video_grids.numel() > 0:
-        max_frames_per_video = int(video_grids[:, 0].max().item())
-    else:
-        max_frames_per_video = int(pixel_values.shape[0])
-    index_limit = max(max_frames_per_video * patches_per_frame, patches_per_frame)
-    max_index = int(pooling[valid_positive].max().item())
-
-    if max_index < index_limit:
-        return inputs
-
-    fixed_pooling = torch.where(
-        valid_positive,
-        pooling.clamp(max=index_limit - 1),
-        pooling,
-    )
-    inputs["video_token_pooling"] = fixed_pooling
-    print(
-        f"Clamped Molmo2 video_token_pooling: "
-        f"max index {max_index} -> {int(fixed_pooling[fixed_pooling.ge(0)].max().item())}, "
-        f"index_limit={index_limit}"
-    )
-    return inputs
-
-
-def build_messages(video_path: str, prompt: str, video_content_kwargs: dict | None = None):
+def build_messages(
+    video_path: str,
+    prompt: str,
+    model_type: str = "",
+    video_content_kwargs: dict | None = None,
+):
     user_input = QUESTION_TEMPLATE.format(prompt=prompt)
     video_content = {"type": "video", "video": str(Path(video_path).resolve())}
     video_content.update(video_content_kwargs or {})
+    content = [
+        video_content,
+        {"type": "text", "text": user_input},
+    ]
+    if model_type == "molmo2":
+        content = [
+            {"type": "text", "text": user_input},
+            video_content,
+        ]
     return [
         {
             "role": "user",
-            "content": [
-                video_content,
-                {"type": "text", "text": user_input},
-            ],
+            "content": content,
         }
     ]
+
+
+def normalize_molmo2_messages(messages):
+    normalized = []
+    for message in messages:
+        if message.get("role") != "user" or not isinstance(message.get("content"), list):
+            normalized.append(message)
+            continue
+        text_parts = [part for part in message["content"] if part.get("type") == "text"]
+        other_parts = [part for part in message["content"] if part.get("type") != "text"]
+        normalized.append({**message, "content": text_parts + other_parts})
+    return normalized
 
 
 def get_metadata_value(metadata, key: str):
@@ -590,14 +520,15 @@ def main():
     prepare_processor(processor, model, model_type, args.model_max_length)
     if model_type == "internvl":
         configure_internvl_processor(processor, model, args)
-    if model_type == "molmo2":
-        configure_molmo2_processor(processor, args)
 
     messages = build_messages(
         args.video,
         args.prompt,
+        model_type,
         build_video_content_kwargs(model_type, args),
     )
+    if model_type == "molmo2":
+        messages = normalize_molmo2_messages(messages)
     if model_type.startswith("qwen"):
         maybe_add_qwen_time_instruction(messages, processor)
 
@@ -609,8 +540,6 @@ def main():
         return_tensors="pt",
         **build_template_kwargs(model_type, args),
     )
-    if model_type == "molmo2":
-        inputs = sanitize_molmo2_pooling_indices(inputs)
     inputs = inputs.to(model.device)
 
     generation_kwargs = build_generation_kwargs(processor.tokenizer, args)
