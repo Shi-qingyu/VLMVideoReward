@@ -67,7 +67,7 @@ def parse_args():
         help="Keep this at 1 for frame-aligned visualizations.",
     )
     parser.add_argument("--attn_implementation", default=os.environ.get("ATTN_IMPLEMENTATION"))
-    parser.add_argument("--output_dir", default="outputs/visual_token_viz/internvl")
+    parser.add_argument("--output_dir", default="output")
     parser.add_argument("--prefix", default=None)
     parser.add_argument(
         "--frame_indices",
@@ -76,7 +76,6 @@ def parse_args():
     )
     parser.add_argument("--pca_scope", choices=["global", "per_frame"], default="global")
     parser.add_argument("--image_scale", type=int, default=24)
-    parser.add_argument("--grid_columns", type=int, default=4)
     parser.add_argument("--no_normalize_diff", action="store_true")
     parser.add_argument("--save_features", action="store_true")
     return parser.parse_args()
@@ -188,15 +187,15 @@ def main():
     configure_internvl_processor(processor, model, args)
 
     features = extract_internvl_features(model, processor, args)
-    prefix = args.prefix or Path(args.video).stem
+    prefix = args.prefix or f"internvl_{Path(args.video).stem}"
     summary = save_visualizations(
         features,
         args.output_dir,
         prefix=prefix,
+        video_path=args.video,
         frame_indices=args.frame_indices,
         pca_scope=args.pca_scope,
         image_scale=args.image_scale,
-        grid_columns=args.grid_columns,
         normalize_for_diff=not args.no_normalize_diff,
         save_features=args.save_features,
     )

@@ -4,10 +4,10 @@ import math
 import os
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 
 def add_repo_root_to_path() -> Path:
@@ -305,11 +305,8 @@ def apply_heatmap(values: np.ndarray, robust: bool = True) -> np.ndarray:
     return rgb.astype(np.uint8)
 
 
-def _resize_image(array: np.ndarray, scale: int) -> Image.Image:
-    image = Image.fromarray(array)
-    if scale > 1:
-        image = image.resize((image.width * scale, image.height * scale), Image.Resampling.NEAREST)
-    return image
+def _resize_feature_map(array: np.ndarray, size: tuple[int, int]) -> Image.Image:
+    return Image.fromarray(array).resize(size, Image.Resampling.NEAREST)
 
 
 def _draw_label(image: Image.Image, label: str) -> Image.Image:
@@ -321,43 +318,112 @@ def _draw_label(image: Image.Image, label: str) -> Image.Image:
     return canvas
 
 
-def save_image_grid(
-    images: Iterable[tuple[str, Image.Image]],
+def _fit_image(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    fitted = ImageOps.contain(image.convert("RGB"), size, Image.Resampling.BILINEAR)
+    canvas = Image.new("RGB", size, (245, 245, 245))
+    x = (size[0] - fitted.width) // 2
+    y = (size[1] - fitted.height) // 2
+    canvas.paste(fitted, (x, y))
+    return canvas
+
+
+def _blank_image(size: tuple[int, int], text: str = "") -> Image.Image:
+    image = Image.new("RGB", size, (245, 245, 245))
+    if text:
+        draw = ImageDraw.Draw(image)
+        draw.text((8, max(8, size[1] // 2 - 8)), text, fill=(80, 80, 80))
+    return image
+
+
+def read_video_frames(video_path: Any, num_frames: int) -> list[Image.Image]:
+    path = Path(video_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Video path does not exist: {path}")
+
+    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        image = Image.open(path).convert("RGB")
+        return [image.copy() for _ in range(num_frames)]
+
+    decord_error = None
+    try:
+        from decord import VideoReader, cpu
+
+        reader = VideoReader(str(path), ctx=cpu(0))
+        if len(reader) == 0:
+            raise ValueError(f"No frames found in {path}.")
+        indices = np.linspace(0, len(reader) - 1, num_frames)
+        indices = np.rint(indices).astype(np.int64).tolist()
+        frames = reader.get_batch(indices).asnumpy()
+        return [Image.fromarray(frame).convert("RGB") for frame in frames]
+    except Exception as exc:
+        decord_error = exc
+
+    try:
+        import av
+
+        with av.open(str(path)) as container:
+            stream = container.streams.video[0]
+            total = int(stream.frames or 0)
+            decoded = [frame.to_image().convert("RGB") for frame in container.decode(stream)]
+        if not decoded:
+            raise ValueError(f"No frames decoded from {path}.")
+        if total <= 0:
+            total = len(decoded)
+        indices = np.linspace(0, len(decoded) - 1, num_frames)
+        indices = np.rint(indices).astype(np.int64).tolist()
+        return [decoded[idx] for idx in indices]
+    except Exception as av_error:
+        raise RuntimeError(
+            f"Could not decode video frames from {path}. decord error={decord_error}; "
+            f"av error={av_error}"
+        ) from av_error
+
+
+def save_three_row_grid(
+    rows: list[tuple[str, list[tuple[str, Image.Image]]]],
     output_path: Path,
     *,
-    columns: int = 4,
     padding: int = 8,
+    row_label_width: int = 96,
 ) -> None:
-    labeled = [_draw_label(image, label) for label, image in images]
-    if not labeled:
-        return
-    columns = max(1, columns)
-    rows = int(math.ceil(len(labeled) / columns))
-    cell_w = max(image.width for image in labeled)
-    cell_h = max(image.height for image in labeled)
-    grid = Image.new(
-        "RGB",
-        (columns * cell_w + (columns + 1) * padding, rows * cell_h + (rows + 1) * padding),
-        (255, 255, 255),
-    )
-    for idx, image in enumerate(labeled):
-        row, col = divmod(idx, columns)
-        x = padding + col * (cell_w + padding)
-        y = padding + row * (cell_h + padding)
-        grid.paste(image.convert("RGB"), (x, y))
+    if not rows or not rows[0][1]:
+        raise ValueError("Cannot save an empty visualization grid.")
+
+    num_cols = max(len(images) for _row_label, images in rows)
+    cell_w = max(image.width for _row_label, images in rows for _label, image in images)
+    cell_h = max(image.height for _row_label, images in rows for _label, image in images)
+    labeled_cell_h = cell_h + 20
+    width = row_label_width + num_cols * cell_w + (num_cols + 1) * padding
+    height = len(rows) * labeled_cell_h + (len(rows) + 1) * padding
+    grid = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(grid)
+
+    for row_idx, (row_label, images) in enumerate(rows):
+        y = padding + row_idx * (labeled_cell_h + padding)
+        draw.text((padding, y + labeled_cell_h // 2 - 7), row_label, fill=(0, 0, 0))
+        for col_idx in range(num_cols):
+            if col_idx < len(images):
+                label, image = images[col_idx]
+                cell = _fit_image(image, (cell_w, cell_h))
+            else:
+                label, cell = "", _blank_image((cell_w, cell_h))
+            x = row_label_width + padding + col_idx * (cell_w + padding)
+            draw.text((x + 4, y + 3), label, fill=(0, 0, 0))
+            grid.paste(cell, (x, y + 20))
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     grid.save(output_path)
 
 
 def save_visualizations(
     features: Any,
-    output_dir: str | os.PathLike[str],
+    output_dir: Any,
     *,
     prefix: str,
+    video_path: Optional[str] = None,
     frame_indices: Optional[str] = None,
     pca_scope: str = "global",
     image_scale: int = 24,
-    grid_columns: int = 4,
     normalize_for_diff: bool = True,
     robust: bool = True,
     save_features: bool = False,
@@ -373,29 +439,37 @@ def save_visualizations(
     if not frames:
         raise ValueError("No frames selected.")
 
-    pca_maps = pca_rgb_maps(arr, frames, scope=pca_scope, robust=robust)
-    pca_grid_items = []
+    all_original_frames = None
+    if video_path is not None:
+        all_original_frames = read_video_frames(video_path, num_frames)
+        cell_size = all_original_frames[frames[0]].size
+    else:
+        cell_size = (arr.shape[2] * image_scale, arr.shape[1] * image_scale)
+
+    original_items = []
     for frame_idx in frames:
-        image = _resize_image(pca_maps[frame_idx], image_scale)
-        path = output_dir / f"{prefix}_frame{frame_idx:03d}_pca.png"
-        image.save(path)
-        pca_grid_items.append((f"frame {frame_idx}", image))
-    save_image_grid(
-        pca_grid_items,
-        output_dir / f"{prefix}_pca_grid.png",
-        columns=grid_columns,
-    )
+        if all_original_frames is None:
+            image = _blank_image(cell_size, "no video")
+        else:
+            image = all_original_frames[frame_idx].convert("RGB")
+            if image.size != cell_size:
+                image = image.resize(cell_size, Image.Resampling.BILINEAR)
+        original_items.append((f"frame {frame_idx}", image))
+
+    pca_maps = pca_rgb_maps(arr, frames, scope=pca_scope, robust=robust)
+    pca_items = []
+    for frame_idx in frames:
+        image = _resize_feature_map(pca_maps[frame_idx], cell_size)
+        pca_items.append((f"frame {frame_idx}", image))
 
     diff_features = l2_normalize(arr) if normalize_for_diff else arr
-    diff_grid_items = []
+    diff_items = [("", _blank_image(cell_size, "start"))]
     diff_stats = []
     for prev_idx, next_idx in zip(frames[:-1], frames[1:]):
         diff = np.linalg.norm(diff_features[next_idx] - diff_features[prev_idx], axis=-1)
         diff_rgb = apply_heatmap(diff, robust=robust)
-        image = _resize_image(diff_rgb, image_scale)
-        path = output_dir / f"{prefix}_diff{prev_idx:03d}_{next_idx:03d}.png"
-        image.save(path)
-        diff_grid_items.append((f"{prev_idx}->{next_idx}", image))
+        image = _resize_feature_map(diff_rgb, cell_size)
+        diff_items.append((f"{prev_idx}->{next_idx}", image))
         diff_stats.append(
             {
                 "from": prev_idx,
@@ -405,10 +479,17 @@ def save_visualizations(
                 "min": float(diff.min()),
             }
         )
-    save_image_grid(
-        diff_grid_items,
-        output_dir / f"{prefix}_diff_grid.png",
-        columns=grid_columns,
+    while len(diff_items) < len(frames):
+        diff_items.append(("", _blank_image(cell_size)))
+
+    composite_path = output_dir / f"{prefix}_visual_tokens.png"
+    save_three_row_grid(
+        [
+            ("Original", original_items),
+            ("PCA", pca_items),
+            ("Diff", diff_items),
+        ],
+        composite_path,
     )
 
     if save_features:
@@ -417,8 +498,8 @@ def save_visualizations(
     return {
         "feature_shape": list(arr.shape),
         "frames": frames,
-        "pca_grid": str(output_dir / f"{prefix}_pca_grid.png"),
-        "diff_grid": str(output_dir / f"{prefix}_diff_grid.png"),
+        "image_size": list(cell_size),
+        "composite": str(composite_path),
         "diff_stats": diff_stats,
     }
 
@@ -426,8 +507,8 @@ def save_visualizations(
 def print_summary(summary: dict[str, Any]) -> None:
     print(f"feature_shape={summary['feature_shape']}")
     print(f"frames={summary['frames']}")
-    print(f"pca_grid={summary['pca_grid']}")
-    print(f"diff_grid={summary['diff_grid']}")
+    print(f"image_size={summary['image_size']}")
+    print(f"composite={summary['composite']}")
     if summary["diff_stats"]:
         means = [item["mean"] for item in summary["diff_stats"]]
         print(f"diff_mean_avg={float(np.mean(means)):.6f}")
