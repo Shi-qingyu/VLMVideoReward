@@ -22,6 +22,7 @@ from inference import (
     load_model,
     load_processor,
     prepare_processor,
+    sanitize_molmo2_pooling_indices,
     trim_repeated_response,
 )
 
@@ -125,7 +126,7 @@ def get_args():
 
     # HF processor args. Keep these aligned with inference.py.
     parser.add_argument("--video_max_frames", type=int, default=8)
-    parser.add_argument("--video_fps", type=float, default=None)
+    parser.add_argument("--video_fps", type=float, default=1.0)
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)
@@ -476,6 +477,8 @@ def generate_hf_one(model, processor, model_type: str, args, messages):
         return_tensors="pt",
         **build_template_kwargs(model_type, args),
     )
+    if model_type == "molmo2":
+        inputs = sanitize_molmo2_pooling_indices(inputs)
     inputs = inputs.to(model.device)
 
     generated_ids = model.generate(

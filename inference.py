@@ -22,6 +22,7 @@ DEFAULT_MODEL_PATH = (
     "output/internvl35-4b-baseline-bs4-ga4/checkpoint-300"
 )
 DEFAULT_VIDEO_PATH = "data/videos/eval_0/0.mp4"
+DEFAULT_VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "1"))
 DEFAULT_PROMPT = (
     "A Black man in a short-sleeve shirt stands at a kitchen stove. He holds a box "
     "of dry pasta in one hand and pours the pasta into a pot of boiling water. "
@@ -76,7 +77,7 @@ def parse_args():
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     parser.add_argument("--video_max_frames", type=int, default=8)
-    parser.add_argument("--video_fps", type=float, default=None)
+    parser.add_argument("--video_fps", type=float, default=DEFAULT_VIDEO_FPS)
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)
@@ -354,13 +355,22 @@ def configure_molmo2_processor(processor, args):
 
     if video_processor is None:
         return
+    if hasattr(video_processor, "min_frames"):
+        video_processor.min_frames = int(args.video_max_frames)
+    if hasattr(video_processor, "max_frames"):
+        video_processor.max_frames = int(args.video_max_frames)
     if hasattr(video_processor, "num_frames"):
         video_processor.num_frames = int(args.video_max_frames)
     if hasattr(video_processor, "frame_sample_mode"):
         video_processor.frame_sample_mode = args.molmo2_video_frame_sampling_mode
+    if hasattr(video_processor, "frame_sampling_mode"):
+        video_processor.frame_sampling_mode = args.molmo2_video_frame_sampling_mode
     if hasattr(video_processor, "max_fps"):
         video_fps = getattr(args, "video_fps", None)
         video_processor.max_fps = float(video_fps) if video_fps and video_fps > 0 else None
+    if hasattr(video_processor, "fps"):
+        video_fps = getattr(args, "video_fps", None)
+        video_processor.fps = float(video_fps) if video_fps and video_fps > 0 else None
 
 
 def build_video_content_kwargs(model_type: str, args) -> dict:
@@ -375,6 +385,40 @@ def build_video_content_kwargs(model_type: str, args) -> dict:
     if getattr(args, "video_fps", None) is not None and args.video_fps > 0:
         kwargs["max_fps"] = float(args.video_fps)
     return kwargs
+
+
+def sanitize_molmo2_pooling_indices(inputs):
+    for pooling_key, pixel_key in (
+        ("image_token_pooling", "pixel_values"),
+        ("video_token_pooling", "pixel_values_videos"),
+    ):
+        pooling = inputs.get(pooling_key)
+        pixel_values = inputs.get(pixel_key)
+        if not torch.is_tensor(pooling) or not torch.is_tensor(pixel_values):
+            continue
+        if pixel_values.dim() < 2 or pixel_values.shape[1] <= 0:
+            continue
+
+        patch_count = int(pixel_values.shape[1])
+        valid_positive = pooling.ge(0)
+        overflow = valid_positive & pooling.ge(patch_count)
+        if not bool(overflow.any().item()):
+            continue
+
+        fixed_pooling = torch.where(
+            overflow,
+            pooling.remainder(patch_count),
+            pooling,
+        )
+        inputs[pooling_key] = fixed_pooling
+        print(
+            f"Adjusted Molmo2 {pooling_key}: "
+            f"max index {int(pooling[valid_positive].max().item())} -> "
+            f"{int(fixed_pooling[fixed_pooling.ge(0)].max().item())}, "
+            f"patch_count={patch_count}"
+        )
+
+    return inputs
 
 
 def build_messages(video_path: str, prompt: str, video_content_kwargs: dict | None = None):
@@ -557,6 +601,8 @@ def main():
         return_tensors="pt",
         **build_template_kwargs(model_type, args),
     )
+    if model_type == "molmo2":
+        inputs = sanitize_molmo2_pooling_indices(inputs)
     inputs = inputs.to(model.device)
 
     generation_kwargs = build_generation_kwargs(processor.tokenizer, args)
