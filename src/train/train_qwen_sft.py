@@ -19,6 +19,7 @@ import logging
 import pathlib
 import sys
 from pathlib import Path
+from typing import Optional
 
 import torch
 import transformers
@@ -97,6 +98,33 @@ def rank0_print(*args):
 
 def is_rank0_or_single_process() -> bool:
     return not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+
+
+def _checkpoint_step(checkpoint_path: pathlib.Path) -> int:
+    try:
+        return int(checkpoint_path.name.rsplit("-", 1)[-1])
+    except ValueError:
+        return -1
+
+
+def _find_latest_complete_checkpoint(output_dir: str) -> Optional[str]:
+    checkpoints = sorted(
+        pathlib.Path(output_dir).glob("checkpoint-*"),
+        key=_checkpoint_step,
+    )
+    incomplete_checkpoints = []
+    for checkpoint in reversed(checkpoints):
+        if (checkpoint / "trainer_state.json").is_file():
+            return str(checkpoint)
+        incomplete_checkpoints.append(str(checkpoint))
+
+    if incomplete_checkpoints:
+        logging.warning(
+            "Found checkpoint directories without trainer_state.json; treating them "
+            "as incomplete and not resuming from them: %s",
+            incomplete_checkpoints,
+        )
+    return None
 
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
@@ -240,6 +268,8 @@ def _load_processor(model_args, training_args, model_type: str):
 
     if model_type == "internvl":
         _patch_internvl_tokenizer(processor.tokenizer)
+    if model_type == "molmo2" and not hasattr(processor, "audio_tokenizer"):
+        processor.audio_tokenizer = None
     return processor
 
 
@@ -734,9 +764,10 @@ def train(attn_implementation="flash_attention_2"):
     )
     _dump_first_train_batch(trainer, processor.tokenizer, training_args)
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        logging.info("checkpoint found, resume training")
-        trainer.train(resume_from_checkpoint=True)
+    resume_checkpoint = _find_latest_complete_checkpoint(training_args.output_dir)
+    if resume_checkpoint is not None:
+        logging.info("checkpoint found, resume training from %s", resume_checkpoint)
+        trainer.train(resume_from_checkpoint=resume_checkpoint)
     else:
         trainer.train()
     trainer.save_state()
