@@ -109,6 +109,38 @@ def _sqrt_hw(num_tokens: int, name: str) -> tuple[int, int]:
     return root, root
 
 
+def _infer_temporal_square_grid(
+    num_tokens: int,
+    *,
+    target_frames: Optional[int],
+    name: str,
+) -> tuple[int, int, int]:
+    candidates = []
+    for frames in range(1, num_tokens + 1):
+        if num_tokens % frames != 0:
+            continue
+        per_frame_tokens = num_tokens // frames
+        if not _is_square(per_frame_tokens):
+            continue
+        h, w = _sqrt_hw(per_frame_tokens, name)
+        distance = abs(frames - target_frames) if target_frames else 0
+        frame_tie_breaker = -frames if target_frames else frames
+        candidates.append((distance, frame_tie_breaker, frames, h, w))
+
+    if not candidates:
+        raise ValueError(
+            f"Cannot infer a temporal square grid for {name}: {num_tokens} tokens."
+        )
+
+    _distance, _frame_tie_breaker, frames, h, w = min(candidates)
+    if target_frames and frames != target_frames:
+        print(
+            f"warning: inferred {frames} feature frames for {name} from "
+            f"{num_tokens} tokens, requested/inferred video frames was {target_frames}."
+        )
+    return frames, h, w
+
+
 def tokens_to_grid(
     tensor: Any,
     *,
@@ -147,18 +179,32 @@ def tokens_to_grid(
             per_frame_tokens = tokens // num_frames
             h, w = grid_hw or _sqrt_hw(per_frame_tokens, name)
             return tensor.reshape(num_frames, h, w, dim)
+        if first == 1 and num_frames:
+            inferred_frames, h, w = _infer_temporal_square_grid(
+                tokens,
+                target_frames=num_frames,
+                name=name,
+            )
+            return tensor.reshape(inferred_frames, h, w, dim)
         h, w = grid_hw or _sqrt_hw(tokens, name)
         return tensor.reshape(first, h, w, dim)
 
     if len(shape) == 2:
         tokens, dim = shape
         if not num_frames:
-            h, w = grid_hw or _sqrt_hw(tokens, name)
-            return tensor.reshape(1, h, w, dim)
-        if tokens % num_frames != 0:
-            raise ValueError(
-                f"Cannot split {name} with shape {shape} into {num_frames} frames."
+            inferred_frames, h, w = _infer_temporal_square_grid(
+                tokens,
+                target_frames=None,
+                name=name,
             )
+            return tensor.reshape(inferred_frames, h, w, dim)
+        if tokens % num_frames != 0:
+            inferred_frames, h, w = _infer_temporal_square_grid(
+                tokens,
+                target_frames=num_frames,
+                name=name,
+            )
+            return tensor.reshape(inferred_frames, h, w, dim)
         per_frame_tokens = tokens // num_frames
         h, w = grid_hw or _sqrt_hw(per_frame_tokens, name)
         return tensor.reshape(num_frames, h, w, dim)
