@@ -348,6 +348,36 @@ def _label_tokens_from_char_spans(
                 break
 
 
+def _label_immediate_eos_after_spans(
+    labels: torch.Tensor,
+    input_ids: torch.Tensor,
+    token_offsets: List[tuple[int, int]],
+    label_spans: List[tuple[int, int]],
+    tokenizer,
+) -> None:
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if not isinstance(eos_token_id, int):
+        return
+
+    tokens = input_ids[0].tolist()
+    for label_start, label_end in label_spans:
+        last_labeled_index = -1
+        for token_index, (token_start, token_end) in enumerate(token_offsets):
+            if token_start < label_end and token_end > label_start:
+                last_labeled_index = token_index
+
+        token_index = last_labeled_index + 1
+        while token_index < len(tokens) and _is_whitespace_token(
+            tokenizer,
+            tokens[token_index],
+        ):
+            token_index += 1
+
+        if token_index < len(tokens) and tokens[token_index] == eos_token_id:
+            for index in range(last_labeled_index + 1, token_index + 1):
+                labels[0, index] = input_ids[0, index]
+
+
 def _is_whitespace_token(tokenizer, token_id: int) -> bool:
     cache = getattr(tokenizer, "_whitespace_token_cache", None)
     if cache is None:
@@ -467,6 +497,61 @@ def _ensure_batched_input_ids(input_ids: Any) -> torch.Tensor:
     return torch.tensor(input_ids, dtype=torch.long).unsqueeze(0)
 
 
+def _append_sequence_value(value: Any, fill_value: int, seq_len: int) -> Any:
+    if not isinstance(value, torch.Tensor):
+        return value
+    if value.dim() == 0 or value.shape[-1] != seq_len:
+        return value
+
+    suffix = torch.full(
+        (*value.shape[:-1], 1),
+        fill_value,
+        dtype=value.dtype,
+        device=value.device,
+    )
+    return torch.cat([value, suffix], dim=-1)
+
+
+def _ensure_molmo2_trailing_eos(
+    full_result: Dict[str, Any],
+    tokenizer,
+) -> Dict[str, Any]:
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if not isinstance(eos_token_id, int):
+        return full_result
+
+    input_ids = _ensure_batched_input_ids(full_result["input_ids"])
+    if input_ids.numel() == 0:
+        full_result["input_ids"] = input_ids
+        return full_result
+
+    decoded_text, _ = _token_char_offsets(input_ids[0].tolist(), tokenizer)
+    if not _response_text_label_spans(decoded_text):
+        full_result["input_ids"] = input_ids
+        return full_result
+
+    stripped_text = decoded_text.rstrip()
+    if input_ids[0, -1].item() == eos_token_id or any(
+        stripped_text.endswith(marker) for marker in CHAT_END_MARKERS
+    ):
+        full_result["input_ids"] = input_ids
+        return full_result
+
+    seq_len = input_ids.shape[-1]
+    full_result["input_ids"] = _append_sequence_value(input_ids, eos_token_id, seq_len)
+    if "attention_mask" in full_result:
+        full_result["attention_mask"] = _append_sequence_value(
+            full_result["attention_mask"],
+            1,
+            seq_len,
+        )
+    for key in ("token_type_ids", "mm_token_type_ids"):
+        if key in full_result:
+            full_result[key] = _append_sequence_value(full_result[key], 0, seq_len)
+
+    return full_result
+
+
 def _add_response_labels(full_result: Dict[str, Any], tokenizer) -> Dict[str, Any]:
     input_ids = _ensure_batched_input_ids(full_result["input_ids"])
     labels = torch.full_like(input_ids, IGNORE_INDEX)
@@ -474,6 +559,13 @@ def _add_response_labels(full_result: Dict[str, Any], tokenizer) -> Dict[str, An
     decoded_text, token_offsets = _token_char_offsets(input_ids_flat, tokenizer)
     label_spans = _response_text_label_spans(decoded_text)
     _label_tokens_from_char_spans(labels, input_ids, token_offsets, label_spans)
+    _label_immediate_eos_after_spans(
+        labels,
+        input_ids,
+        token_offsets,
+        label_spans,
+        tokenizer,
+    )
 
     full_result["labels"] = labels
     full_result["input_ids"] = input_ids
@@ -947,6 +1039,8 @@ def preprocess_gemma4_visual(
         return_tensors="pt",
         **template_kwargs,
     )
+    if data_args is not None and getattr(data_args, "model_type", "") == "molmo2":
+        full_result = _ensure_molmo2_trailing_eos(full_result, processor.tokenizer)
     full_result = _add_response_labels(full_result, processor.tokenizer)
     full_result["distill_video_metadatas"] = []
     return full_result
