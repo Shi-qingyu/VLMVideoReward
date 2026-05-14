@@ -1938,7 +1938,13 @@ class LazyRLDataset(Dataset):
                     if model_type.startswith("qwen")
                     else ""
                 )
-                messages = _build_messages(source, base_path, self.using_cot, time_instruction)
+                messages = _build_messages(
+                    source,
+                    base_path,
+                    self.using_cot,
+                    time_instruction,
+                    video_content_kwargs=_build_video_content_kwargs(self.data_args),
+                )
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
 

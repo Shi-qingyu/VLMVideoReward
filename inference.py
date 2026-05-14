@@ -52,7 +52,16 @@ def parse_args():
     parser.add_argument(
         "--model_type",
         default=os.environ.get("MODEL_TYPE", "auto"),
-        choices=["auto", "qwen3vl", "qwen2.5vl", "qwen2vl", "internvl", "gemma4", "minicpmv"],
+        choices=[
+            "auto",
+            "qwen3vl",
+            "qwen2.5vl",
+            "qwen2vl",
+            "internvl",
+            "gemma4",
+            "minicpmv",
+            "molmo2",
+        ],
     )
     parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--model_max_length", type=int, default=8192)
@@ -62,9 +71,15 @@ def parse_args():
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     parser.add_argument("--video_max_frames", type=int, default=8)
+    parser.add_argument("--video_fps", type=float, default=None)
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)
+    parser.add_argument("--molmo2_image_size", type=int, default=378)
+    parser.add_argument(
+        "--molmo2_video_frame_sampling_mode",
+        default="uniform_last_frame",
+    )
     parser.add_argument(
         "--attn_implementation",
         default=os.environ.get("ATTN_IMPLEMENTATION"),
@@ -108,6 +123,8 @@ def infer_model_type(model_path: str) -> str:
 
     if "internvl" in haystack:
         return "internvl"
+    if "molmo2" in haystack or "molmo" in haystack:
+        return "molmo2"
     if "gemma" in haystack:
         return "gemma4"
     if "minicpm" in haystack:
@@ -177,9 +194,14 @@ def patch_internvl_tokenizer(tokenizer):
 
 
 def load_processor(model_path: str, model_type: str):
-    processor_kwargs = {"trust_remote_code": model_type in {"internvl", "minicpmv"}}
+    processor_kwargs = {
+        "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"}
+    }
     if model_type != "internvl":
-        return AutoProcessor.from_pretrained(model_path, **processor_kwargs)
+        processor = AutoProcessor.from_pretrained(model_path, **processor_kwargs)
+        if model_type == "molmo2" and not hasattr(processor, "audio_tokenizer"):
+            processor.audio_tokenizer = None
+        return processor
 
     try:
         processor = AutoProcessor.from_pretrained(model_path, **processor_kwargs)
@@ -223,7 +245,7 @@ def load_model(model_path: str, model_type: str, dtype: str, attn_implementation
     model_kwargs = {
         "dtype": dtype,
         "device_map": "auto",
-        "trust_remote_code": model_type in {"internvl", "minicpmv"},
+        "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"},
     }
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
@@ -297,13 +319,51 @@ def configure_internvl_processor(processor, model, args):
             video_processor.fps = None
 
 
-def build_messages(video_path: str, prompt: str):
+def set_square_size(component, image_size: int | None):
+    if component is not None and image_size is not None and hasattr(component, "size"):
+        component.size = {"height": int(image_size), "width": int(image_size)}
+
+
+def configure_molmo2_processor(processor, args):
+    image_size = int(args.molmo2_image_size) if args.molmo2_image_size else None
+    set_square_size(getattr(processor, "image_processor", None), image_size)
+    video_processor = getattr(processor, "video_processor", None)
+    set_square_size(video_processor, image_size)
+
+    if video_processor is None:
+        return
+    if hasattr(video_processor, "num_frames"):
+        video_processor.num_frames = int(args.video_max_frames)
+    if hasattr(video_processor, "frame_sample_mode"):
+        video_processor.frame_sample_mode = args.molmo2_video_frame_sampling_mode
+    if hasattr(video_processor, "max_fps"):
+        video_fps = getattr(args, "video_fps", None)
+        video_processor.max_fps = float(video_fps) if video_fps and video_fps > 0 else None
+
+
+def build_video_content_kwargs(model_type: str, args) -> dict:
+    if model_type != "molmo2":
+        return {}
+
+    kwargs = {}
+    if args.molmo2_video_frame_sampling_mode:
+        kwargs["frame_sampling_mode"] = args.molmo2_video_frame_sampling_mode
+    if args.video_max_frames is not None:
+        kwargs["num_frames"] = int(args.video_max_frames)
+    if getattr(args, "video_fps", None) is not None and args.video_fps > 0:
+        kwargs["max_fps"] = float(args.video_fps)
+    return kwargs
+
+
+def build_messages(video_path: str, prompt: str, video_content_kwargs: dict | None = None):
     user_input = QUESTION_TEMPLATE.format(prompt=prompt)
+    video_content = {"type": "video", "video": str(Path(video_path).resolve())}
+    video_content.update(video_content_kwargs or {})
     return [
         {
             "role": "user",
             "content": [
-                {"type": "video", "video": str(Path(video_path).resolve())},
+                video_content,
                 {"type": "text", "text": user_input},
             ],
         }
@@ -455,8 +515,14 @@ def main():
     prepare_processor(processor, model, model_type, args.model_max_length)
     if model_type == "internvl":
         configure_internvl_processor(processor, model, args)
+    if model_type == "molmo2":
+        configure_molmo2_processor(processor, args)
 
-    messages = build_messages(args.video, args.prompt)
+    messages = build_messages(
+        args.video,
+        args.prompt,
+        build_video_content_kwargs(model_type, args),
+    )
     if model_type.startswith("qwen"):
         maybe_add_qwen_time_instruction(messages, processor)
 

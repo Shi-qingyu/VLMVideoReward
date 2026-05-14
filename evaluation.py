@@ -16,6 +16,7 @@ from transformers import AutoProcessor
 from inference import (
     build_generation_kwargs,
     build_template_kwargs,
+    configure_molmo2_processor,
     configure_internvl_processor,
     infer_model_type,
     load_model,
@@ -72,13 +73,22 @@ def get_args():
     parser.add_argument(
         "--model_type",
         default="auto",
-        choices=["auto", "qwen3vl", "qwen2.5vl", "qwen2vl", "internvl", "gemma4", "minicpmv"],
+        choices=[
+            "auto",
+            "qwen3vl",
+            "qwen2.5vl",
+            "qwen2vl",
+            "internvl",
+            "gemma4",
+            "minicpmv",
+            "molmo2",
+        ],
     )
     parser.add_argument(
         "--backend",
         choices=["auto", "vllm", "hf"],
         default="auto",
-        help="auto uses HF for InternVL and vLLM for other models.",
+        help="auto uses HF for InternVL/Molmo2 and vLLM for other models.",
     )
     parser.add_argument("--dataset_use", type=str, default="videoreward_eval_polished_v3")
     parser.add_argument("--batch_size", type=int, default=4)
@@ -108,11 +118,17 @@ def get_args():
         default="/mnt/bn/xiangtai-training-data-video/sqy/projects/videorewardmodel/data/videos/",
     )
 
-    # InternVL/HF processor args. Keep these aligned with inference.py.
+    # HF processor args. Keep these aligned with inference.py.
     parser.add_argument("--video_max_frames", type=int, default=8)
+    parser.add_argument("--video_fps", type=float, default=None)
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)
+    parser.add_argument("--molmo2_image_size", type=int, default=378)
+    parser.add_argument(
+        "--molmo2_video_frame_sampling_mode",
+        default="uniform_last_frame",
+    )
     parser.add_argument("--attn_implementation", default=os.environ.get("ATTN_IMPLEMENTATION"))
     return parser.parse_args()
 
@@ -347,7 +363,7 @@ def resolve_eval_model_type(args, inference_model_path):
 def resolve_backend(args, model_type: str) -> str:
     if args.backend != "auto":
         return args.backend
-    return "hf" if model_type == "internvl" else "vllm"
+    return "hf" if model_type in {"internvl", "molmo2"} else "vllm"
 
 
 def result_paths(args):
@@ -417,7 +433,10 @@ def run_eval_vllm(args, inference_model_path, output_path):
         stop=["</answer>", "<|im_end|>"],
     )
 
-    processor = AutoProcessor.from_pretrained(inference_model_path)
+    processor = AutoProcessor.from_pretrained(
+        inference_model_path,
+        trust_remote_code=True,
+    )
     dataloader = build_dataloader(processor, args)
 
     results = []
@@ -480,6 +499,8 @@ def run_eval_hf(args, inference_model_path, model_type: str, output_path):
     prepare_processor(processor, model, model_type, args.model_max_length)
     if model_type == "internvl":
         configure_internvl_processor(processor, model, args)
+    if model_type == "molmo2":
+        configure_molmo2_processor(processor, args)
 
     dataloader = build_dataloader(processor, args)
 
