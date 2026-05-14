@@ -66,6 +66,11 @@ def parse_args():
     parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--model_max_length", type=int, default=8192)
     parser.add_argument("--dtype", default="auto")
+    parser.add_argument(
+        "--device_map",
+        default=os.environ.get("DEVICE_MAP", "auto"),
+        help="Device map for model loading. For Molmo2, auto defaults to single-device loading.",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
@@ -241,18 +246,35 @@ def load_processor(model_path: str, model_type: str):
     return processor
 
 
-def load_model(model_path: str, model_type: str, dtype: str, attn_implementation: str | None):
+def default_torch_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def load_model(
+    model_path: str,
+    model_type: str,
+    dtype: str,
+    attn_implementation: str | None,
+    device_map: str | None = "auto",
+):
+    use_single_device = model_type == "molmo2" and device_map in {None, "", "auto"}
     model_kwargs = {
         "dtype": dtype,
-        "device_map": "auto",
         "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"},
     }
+    if not use_single_device and device_map not in {None, "", "none"}:
+        model_kwargs["device_map"] = device_map
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
 
     if model_type == "internvl" and not is_hf_internvl_checkpoint(model_path):
-        return AutoModel.from_pretrained(model_path, **model_kwargs).eval()
-    return AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs).eval()
+        model = AutoModel.from_pretrained(model_path, **model_kwargs)
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs)
+
+    if use_single_device:
+        model = model.to(default_torch_device())
+    return model.eval()
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
@@ -510,6 +532,7 @@ def main():
         model_type,
         dtype=args.dtype,
         attn_implementation=args.attn_implementation,
+        device_map=args.device_map,
     )
     processor = load_processor(inference_model_path, model_type)
     prepare_processor(processor, model, model_type, args.model_max_length)
