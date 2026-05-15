@@ -14,7 +14,7 @@ from inference_common import (
 from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
-DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4-fps2-maxf20-minf10-imgsize378-lr5e-5/checkpoint-300"
+DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4-fps2-maxf20-minf10-imgsize378-lr5e-5"
 
 
 def parse_args():

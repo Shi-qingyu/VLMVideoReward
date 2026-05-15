@@ -150,8 +150,6 @@ def configure_qwen_video_processor(processor, args):
     video_processor = getattr(processor, "video_processor", None)
     if video_processor is None:
         return
-    if hasattr(video_processor, "num_frames"):
-        video_processor.num_frames = int(args.video_max_frames)
     if hasattr(video_processor, "fps"):
         video_processor.fps = float(args.video_fps)
 
