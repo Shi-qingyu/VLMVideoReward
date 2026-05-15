@@ -1,5 +1,9 @@
 import functools
+import inspect
 import os
+import re
+import textwrap
+import types
 from pathlib import Path
 from typing import Any
 
@@ -237,10 +241,13 @@ def _first_nested_tensor(value: Any):
 
 
 def _module_tensor_device(module) -> torch.device | None:
+    device = None
     for tensors_fn in (module.parameters, module.buffers):
         for tensor in tensors_fn(recurse=True):
             if tensor.device.type != "meta":
-                return tensor.device
+                device = tensor.device
+    if device is not None:
+        return device
 
     device = getattr(module, "device", None)
     if device is None:
@@ -278,6 +285,10 @@ def patch_molmo2_vision_pooling_device(model) -> None:
     forward_attr = (
         "_old_forward" if hasattr(vision_backbone, "_old_forward") else "forward"
     )
+    if _patch_molmo2_vision_forward_source(vision_backbone, forward_attr):
+        vision_backbone._vlm_reward_pooling_device_patched = True
+        return
+
     original_forward = getattr(vision_backbone, forward_attr)
 
     @functools.wraps(original_forward)
@@ -303,6 +314,68 @@ def patch_molmo2_vision_pooling_device(model) -> None:
 
     setattr(vision_backbone, forward_attr, patched_forward)
     vision_backbone._vlm_reward_pooling_device_patched = True
+
+
+def _patch_molmo2_vision_forward_source(vision_backbone, forward_attr: str) -> bool:
+    original_forward = getattr(vision_backbone, forward_attr)
+    forward_func = getattr(original_forward, "__func__", original_forward)
+
+    try:
+        source = textwrap.dedent(inspect.getsource(forward_func))
+    except (OSError, TypeError):
+        return False
+
+    lines = source.splitlines()
+    def_line = next(
+        (idx for idx, line in enumerate(lines) if line.lstrip().startswith("def ")),
+        None,
+    )
+    if def_line is None:
+        return False
+    source = "\n".join(lines[def_line:])
+
+    pattern = re.compile(
+        r"^(?P<indent>\s*)"
+        r"to_pool = image_features\.reshape\(batch_size, -1, dim\)"
+        r"\[batch_idx, torch\.clip\(pooled_patches_idx, 0\)\]$",
+        re.MULTILINE,
+    )
+
+    def replacement(match):
+        indent = match.group("indent")
+        return "\n".join(
+            [
+                (
+                    f"{indent}pooled_patches_idx = "
+                    "pooled_patches_idx.to(image_features.device)"
+                ),
+                f"{indent}batch_idx = batch_idx.to(image_features.device)",
+                (
+                    f"{indent}to_pool = image_features.reshape(batch_size, -1, dim)"
+                    "[batch_idx, torch.clip(pooled_patches_idx, 0)]"
+                ),
+            ]
+        )
+
+    patched_source, replacements = pattern.subn(replacement, source, count=1)
+    if replacements != 1:
+        return False
+
+    namespace = dict(forward_func.__globals__)
+    try:
+        exec(patched_source, namespace)
+    except Exception:
+        return False
+    patched_forward = namespace.get(forward_func.__name__)
+    if patched_forward is None:
+        return False
+
+    setattr(
+        vision_backbone,
+        forward_attr,
+        types.MethodType(patched_forward, vision_backbone),
+    )
+    return True
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
