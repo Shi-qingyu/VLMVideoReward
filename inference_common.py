@@ -334,21 +334,37 @@ def _patch_molmo2_vision_forward_source(vision_backbone, forward_attr: str) -> b
         return False
     source = "\n".join(lines[def_line:])
 
-    pattern = re.compile(
+    valid_pattern = re.compile(
+        r"^(?P<indent>\s*)valid = pooled_patches_idx >= 0$",
+        re.MULTILINE,
+    )
+    patched_source, valid_replacements = valid_pattern.subn(
+        lambda match: "\n".join(
+            [
+                (
+                    f"{match.group('indent')}pooled_patches_idx = "
+                    "pooled_patches_idx.to(image_features.device)"
+                ),
+                f"{match.group('indent')}valid = pooled_patches_idx >= 0",
+            ]
+        ),
+        source,
+        count=1,
+    )
+    if valid_replacements != 1:
+        return False
+
+    pooling_pattern = re.compile(
         r"^(?P<indent>\s*)"
         r"to_pool = image_features\.reshape\(batch_size, -1, dim\)"
         r"\[batch_idx, torch\.clip\(pooled_patches_idx, 0\)\]$",
         re.MULTILINE,
     )
 
-    def replacement(match):
+    def pooling_replacement(match):
         indent = match.group("indent")
         return "\n".join(
             [
-                (
-                    f"{indent}pooled_patches_idx = "
-                    "pooled_patches_idx.to(image_features.device)"
-                ),
                 f"{indent}batch_idx = batch_idx.to(image_features.device)",
                 (
                     f"{indent}to_pool = image_features.reshape(batch_size, -1, dim)"
@@ -357,8 +373,29 @@ def _patch_molmo2_vision_forward_source(vision_backbone, forward_attr: str) -> b
             ]
         )
 
-    patched_source, replacements = pattern.subn(replacement, source, count=1)
-    if replacements != 1:
+    patched_source, pooling_replacements = pooling_pattern.subn(
+        pooling_replacement,
+        patched_source,
+        count=1,
+    )
+    if pooling_replacements != 1:
+        return False
+
+    return_pattern = re.compile(
+        r"^(?P<indent>\s*)"
+        r"return pooled_features\.view\(-1, pooled_features\.shape\[-1\]\)"
+        r"\[valid_token\.flatten\(\)\]$",
+        re.MULTILINE,
+    )
+    patched_source, return_replacements = return_pattern.subn(
+        (
+            r"\g<indent>return pooled_features.view(-1, pooled_features.shape[-1])"
+            r"[valid_token.flatten().to(pooled_features.device)]"
+        ),
+        patched_source,
+        count=1,
+    )
+    if return_replacements != 1:
         return False
 
     namespace = dict(forward_func.__globals__)
