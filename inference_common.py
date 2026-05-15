@@ -1,5 +1,7 @@
+import functools
 import os
 from pathlib import Path
+from typing import Any
 
 import torch
 from transformers import (
@@ -208,8 +210,99 @@ def load_model(
         model_kwargs["attn_implementation"] = attn_implementation
 
     if model_type == "internvl" and not is_hf_internvl_checkpoint(model_path):
-        return AutoModel.from_pretrained(model_path, **model_kwargs).eval()
-    return AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs).eval()
+        model = AutoModel.from_pretrained(model_path, **model_kwargs)
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs)
+
+    if model_type == "molmo2":
+        patch_molmo2_vision_pooling_device(model)
+
+    return model.eval()
+
+
+def _first_nested_tensor(value: Any):
+    if torch.is_tensor(value):
+        return value
+    if isinstance(value, dict):
+        for nested_value in value.values():
+            tensor = _first_nested_tensor(nested_value)
+            if tensor is not None:
+                return tensor
+    if isinstance(value, (list, tuple)):
+        for nested_value in value:
+            tensor = _first_nested_tensor(nested_value)
+            if tensor is not None:
+                return tensor
+    return None
+
+
+def _module_tensor_device(module) -> torch.device | None:
+    for tensors_fn in (module.parameters, module.buffers):
+        for tensor in tensors_fn(recurse=True):
+            if tensor.device.type != "meta":
+                return tensor.device
+
+    device = getattr(module, "device", None)
+    if device is None:
+        return None
+    return torch.device(device)
+
+
+def _move_nested_tensors_to_device(value: Any, device: torch.device):
+    if torch.is_tensor(value):
+        if value.device == device:
+            return value
+        return value.to(device, non_blocking=True)
+    if isinstance(value, dict):
+        return {
+            key: _move_nested_tensors_to_device(nested_value, device)
+            for key, nested_value in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_move_nested_tensors_to_device(v, device) for v in value)
+    if isinstance(value, list):
+        return [_move_nested_tensors_to_device(v, device) for v in value]
+    return value
+
+
+def patch_molmo2_vision_pooling_device(model) -> None:
+    core_model = getattr(model, "model", None)
+    vision_backbone = getattr(core_model, "vision_backbone", None)
+    if vision_backbone is None or getattr(
+        vision_backbone,
+        "_vlm_reward_pooling_device_patched",
+        False,
+    ):
+        return
+
+    forward_attr = (
+        "_old_forward" if hasattr(vision_backbone, "_old_forward") else "forward"
+    )
+    original_forward = getattr(vision_backbone, forward_attr)
+
+    @functools.wraps(original_forward)
+    def patched_forward(*args, **kwargs):
+        target_device = _module_tensor_device(vision_backbone)
+        if target_device is None:
+            tensor = _first_nested_tensor(args)
+            if tensor is None:
+                tensor = _first_nested_tensor(kwargs)
+            target_device = tensor.device if tensor is not None else None
+
+        if target_device is None or target_device.type == "meta":
+            return original_forward(*args, **kwargs)
+
+        moved_args = tuple(
+            _move_nested_tensors_to_device(arg, target_device) for arg in args
+        )
+        moved_kwargs = {
+            key: _move_nested_tensors_to_device(value, target_device)
+            for key, value in kwargs.items()
+        }
+        return original_forward(*moved_args, **moved_kwargs)
+
+    setattr(vision_backbone, forward_attr, patched_forward)
+    vision_backbone._vlm_reward_pooling_device_patched = True
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
