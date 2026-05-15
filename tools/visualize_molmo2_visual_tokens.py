@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoProcessor
 
 from visual_token_viz_common import (
     add_repo_root_to_path,
@@ -24,6 +24,7 @@ from inference_common import (  # noqa: E402
     DEFAULT_PROMPT,
     DEFAULT_VIDEO_PATH,
     QUESTION_TEMPLATE,
+    load_model,
     normalize_molmo2_messages,
 )
 from src.train.checkpoint_utils import prepare_inference_model_dir  # noqa: E402
@@ -350,14 +351,13 @@ def main():
         dtype=args.dtype,
         device_map=args.device_map,
     )
-    model_kwargs = {
-        "trust_remote_code": True,
-        "dtype": args.dtype,
-        "device_map": args.device_map,
-    }
-    if args.attn_implementation:
-        model_kwargs["attn_implementation"] = args.attn_implementation
-    model = AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs).eval()
+    model = load_model(
+        model_path,
+        "molmo2",
+        dtype=args.dtype,
+        attn_implementation=args.attn_implementation,
+        device_map=args.device_map,
+    )
     configure_molmo2_video_processor(processor, args)
 
     features = extract_molmo2_features(model, processor, args)

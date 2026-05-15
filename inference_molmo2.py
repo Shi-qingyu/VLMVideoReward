@@ -2,12 +2,13 @@ import argparse
 import os
 
 import torch
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoProcessor
 
 from inference_common import (
     DEFAULT_PROMPT,
     DEFAULT_VIDEO_PATH,
     QUESTION_TEMPLATE,
+    load_model,
     normalize_molmo2_messages,
 )
 from src.train.checkpoint_utils import prepare_inference_model_dir
@@ -73,17 +74,13 @@ def main():
         dtype=args.dtype,
         device_map=args.device_map,
     )
-    model_kwargs = {
-        "trust_remote_code": True,
-        "dtype": args.dtype,
-        "device_map": args.device_map,
-    }
-    if args.attn_implementation:
-        model_kwargs["attn_implementation"] = args.attn_implementation
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = load_model(
         model_path,
-        **model_kwargs,
-    ).eval()
+        "molmo2",
+        dtype=args.dtype,
+        attn_implementation=args.attn_implementation,
+        device_map=args.device_map,
+    )
 
     messages = build_messages(args.video, args.prompt, args.raw_prompt)
     inputs = processor.apply_chat_template(

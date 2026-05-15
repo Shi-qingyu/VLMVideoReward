@@ -4,14 +4,14 @@ import sys
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoProcessor
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from inference_common import DEFAULT_PROMPT  # noqa: E402
+from inference_common import DEFAULT_PROMPT, load_model  # noqa: E402
 
 
 DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4"
@@ -48,10 +48,11 @@ def main():
         dtype=args.dtype,
         device_map=args.device_map,
     )
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = load_model(
         args.model_path,
-        trust_remote_code=True,
+        "molmo2",
         dtype=args.dtype,
+        attn_implementation=None,
         device_map=args.device_map,
     )
 
