@@ -362,6 +362,26 @@ def _batch_index_value(value, index: int, batch_size: int):
     return value
 
 
+def _is_cu_seqlens_mask(attention_mask, input_ids) -> bool:
+    if not torch.is_tensor(attention_mask) or not torch.is_tensor(input_ids):
+        return False
+    if attention_mask.dim() != 1 or attention_mask.numel() < 2:
+        return False
+
+    mask = attention_mask.detach().cpu().to(torch.long)
+    seq_len = int(input_ids.numel())
+    if int(mask[0].item()) != 0 or int(mask[-1].item()) != seq_len:
+        return False
+    return bool(torch.all(mask[1:] >= mask[:-1]).item())
+
+
+def _fallback_token_mask(tokenizer, sample_input_ids):
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is not None:
+        return sample_input_ids.ne(pad_token_id)
+    return torch.ones_like(sample_input_ids, dtype=torch.bool)
+
+
 def _has_complete_response(text: str) -> bool:
     return all(
         tag in text
@@ -408,26 +428,65 @@ def _dump_first_train_batch(trainer, tokenizer, training_args) -> None:
         if not torch.is_tensor(input_ids) or not torch.is_tensor(labels):
             lines.append("input_ids/labels are missing or are not tensors; cannot decode batch.")
         else:
-            batch_size = int(input_ids.shape[0]) if input_ids.dim() > 1 else 1
             input_ids = input_ids if input_ids.dim() > 1 else input_ids.unsqueeze(0)
             labels = labels if labels.dim() > 1 else labels.unsqueeze(0)
-            if torch.is_tensor(attention_mask) and attention_mask.dim() == 1:
-                attention_mask = attention_mask.unsqueeze(0)
 
-            for index in range(batch_size):
-                sample_input_ids = input_ids[index].detach().cpu()
-                sample_labels = labels[index].detach().cpu()
+            examples = []
+            if _is_cu_seqlens_mask(attention_mask, input_ids):
+                cu_seqlens = attention_mask.detach().cpu().to(torch.long).tolist()
+                flat_input_ids = input_ids.detach().cpu().reshape(-1)
+                flat_labels = labels.detach().cpu().reshape(-1)
+                lines.append(
+                    "Detected flattened/packed batch: interpreting attention_mask as cu_seqlens."
+                )
+                lines.append("")
+                for index, (start, end) in enumerate(zip(cu_seqlens, cu_seqlens[1:])):
+                    examples.append(
+                        (
+                            index,
+                            flat_input_ids[start:end],
+                            flat_labels[start:end],
+                            end - start,
+                        )
+                    )
+            else:
+                batch_size = int(input_ids.shape[0])
+                sequence_mask = None
                 if torch.is_tensor(attention_mask):
-                    sample_mask = attention_mask[index].detach().cpu().bool()
-                else:
-                    pad_token_id = getattr(tokenizer, "pad_token_id", None)
-                    sample_mask = (
-                        sample_input_ids.ne(pad_token_id)
-                        if pad_token_id is not None
-                        else torch.ones_like(sample_input_ids, dtype=torch.bool)
+                    if (
+                        input_ids.shape[0] == 1
+                        and attention_mask.dim() == 1
+                        and attention_mask.numel() == input_ids.shape[1]
+                    ):
+                        sequence_mask = attention_mask.unsqueeze(0)
+                    elif attention_mask.shape == input_ids.shape:
+                        sequence_mask = attention_mask
+                    else:
+                        lines.append(
+                            "attention_mask shape does not match input_ids; "
+                            "falling back to pad-token mask for dump decoding."
+                        )
+                        lines.append("")
+
+                for index in range(batch_size):
+                    sample_input_ids = input_ids[index].detach().cpu()
+                    sample_labels = labels[index].detach().cpu()
+                    if torch.is_tensor(sequence_mask):
+                        sample_mask = sequence_mask[index].detach().cpu().bool()
+                    else:
+                        sample_mask = _fallback_token_mask(tokenizer, sample_input_ids)
+                    effective_input_ids = sample_input_ids[sample_mask]
+                    examples.append(
+                        (
+                            index,
+                            effective_input_ids,
+                            sample_labels,
+                            int(sample_mask.sum().item()),
+                        )
                     )
 
-                effective_input_ids = sample_input_ids[sample_mask]
+            batch_size = len(examples)
+            for index, effective_input_ids, sample_labels, input_token_count in examples:
                 supervised_ids = sample_labels[sample_labels.ne(IGNORE_INDEX)]
                 supervised_text = _decode_token_ids(tokenizer, supervised_ids)
                 complete_response = _has_complete_response(supervised_text)
@@ -443,11 +502,11 @@ def _dump_first_train_batch(trainer, tokenizer, training_args) -> None:
                     [
                         "=" * 100,
                         f"Example {index}",
-                        f"input_token_count: {int(sample_mask.sum().item())}",
+                        f"input_token_count: {input_token_count}",
                         f"supervised_token_count: {int(supervised_ids.numel())}",
                         (
                             "hit_model_max_length_or_truncated: "
-                            f"{int(sample_mask.sum().item()) >= model_max_length}"
+                            f"{input_token_count >= model_max_length}"
                         ),
                         f"complete_think_answer_labels: {complete_response}",
                         f"has_chat_end_label: {has_chat_end_label}",
