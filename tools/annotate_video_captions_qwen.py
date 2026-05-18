@@ -13,16 +13,10 @@ import os
 import re
 import sys
 from pathlib import Path
-from tqdm import tqdm
 from typing import Any, Iterable
 
 
-DEFAULT_CAPTION_PROMPT = (
-    "Watch the video and write one factual video caption in English. "
-    "Describe only visible content: the main subjects, actions, objects, scene, "
-    "and notable camera movement. Do not evaluate video quality and do not mention "
-    "the source prompt. Return only the caption, as one concise sentence."
-)
+DEFAULT_CAPTION_PROMPT = "Describe this video in one concise English sentence."
 
 CAPTION_RE = re.compile(r"^\s*Video Caption\s*:", re.IGNORECASE)
 
@@ -68,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--caption-prompt", default=DEFAULT_CAPTION_PROMPT)
     parser.add_argument("--caption-prefix", default="Video Caption: ")
-    parser.add_argument("--max-new-tokens", type=int, default=96)
+    parser.add_argument("--max-new-tokens", type=int, default=48)
     parser.add_argument("--model-max-length", type=int, default=8192)
     parser.add_argument("--dtype", default="auto")
     parser.add_argument("--device-map", default="auto")
@@ -237,38 +231,39 @@ def insert_caption(value: str, caption: str, prefix: str) -> str:
     return value[:insert_at] + caption_line + "\n" + value[insert_at:]
 
 
-def selected_indices(total: int, start_index: int, limit: int | None) -> set[int]:
+def selected_bounds(total: int, start_index: int, limit: int | None) -> tuple[int, int]:
     start = max(start_index, 0)
     stop = total if limit is None else min(total, start + max(limit, 0))
-    return set(range(start, stop))
+    return start, stop
 
 
-def collect_pending(
+def iter_pending_samples(
     data: list[dict[str, Any]],
     args: argparse.Namespace,
     roots: list[Path],
-) -> tuple[list[tuple[int, Path]], list[tuple[int, str]]]:
-    selected = selected_indices(len(data), args.start_index, args.limit)
-    pending: list[tuple[int, Path]] = []
-    missing: list[tuple[int, str]] = []
+) -> Iterable[tuple[int, Path]]:
+    start, stop = selected_bounds(len(data), args.start_index, args.limit)
+    missing_count = 0
 
-    for index, sample in tqdm(enumerate(data), total=len(data), desc="Checking samples"):
-        if index not in selected:
-            continue
+    for index in range(start, stop):
+        sample = data[index]
         try:
             message = assistant_message(sample)
             value = str(message.get("value", ""))
             if has_caption(value) and not args.overwrite_existing_captions:
                 continue
-            video_path = resolve_video_path(sample, roots)
+            yield index, resolve_video_path(sample, roots)
         except Exception as exc:
-            missing.append((index, str(exc)))
-            if not args.skip_missing and not args.check_only:
+            if not (args.skip_missing or args.check_only):
                 raise
-            continue
-        pending.append((index, video_path))
+            missing_count += 1
+            if missing_count <= 10:
+                print(f"[missing] index={index}: {exc}", file=sys.stderr)
+            elif missing_count == 11:
+                print("[missing] further missing/invalid samples omitted", file=sys.stderr)
 
-    return pending, missing
+    if missing_count:
+        print(f"skipped missing/invalid samples: {missing_count}", file=sys.stderr)
 
 
 def build_video_kwargs(args: argparse.Namespace) -> dict[str, Any]:
@@ -444,12 +439,17 @@ def batched(items: Iterable[Any], batch_size: int) -> Iterable[list[Any]]:
         yield batch
 
 
-def progress(items: Iterable[Any], desc: str = "") -> Iterable[Any]:
+def progress(items: Iterable[Any], desc: str = "", total: int | None = None) -> Iterable[Any]:
     try:
         from tqdm import tqdm
     except ImportError:
         return items
-    return tqdm(items, desc=desc)
+    return tqdm(items, desc=desc, total=total)
+
+
+def prepend_item(first: Any, rest: Iterable[Any]) -> Iterable[Any]:
+    yield first
+    yield from rest
 
 
 def apply_captions(
@@ -489,33 +489,27 @@ def main() -> None:
     else:
         data = load_json(input_path)
 
-    print("resolving video paths and checking existing captions...")
     roots = iter_video_roots(args)
-    print("collecting pending samples...")
-    pending, missing = collect_pending(data, args, roots)
 
     print(f"input samples: {len(data)}")
-    print(f"pending captions: {len(pending)}")
-    print(f"missing/invalid samples: {len(missing)}")
-    if missing:
-        for index, error in missing[:10]:
-            print(f"[missing] index={index}: {error}", file=sys.stderr)
-        if len(missing) > 10:
-            print(f"... {len(missing) - 10} more missing/invalid samples", file=sys.stderr)
-
     if args.check_only:
+        pending_count = sum(1 for _ in iter_pending_samples(data, args, roots))
+        print(f"pending captions: {pending_count}")
         return
-    if missing and not args.skip_missing:
-        raise SystemExit("Missing or invalid samples found. Fix paths or use --skip-missing.")
-    if not pending:
+
+    pending_iter = iter_pending_samples(data, args, roots)
+    try:
+        first_pending = next(pending_iter)
+    except StopIteration:
         write_json(output_path, data)
         print(f"nothing to annotate; wrote {output_path}")
         return
+    pending_items = prepend_item(first_pending, pending_iter)
 
     if args.backend == "hf":
-        captions = generate_hf_captions(pending, args)
+        captions = generate_hf_captions(pending_items, args)
     else:
-        captions = generate_vllm_captions(pending, args)
+        captions = generate_vllm_captions(pending_items, args)
 
     added = apply_captions(data, captions, args, output_path)
     print(f"added captions: {added}")
