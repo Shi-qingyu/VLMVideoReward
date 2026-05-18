@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--backend",
-        default="hf",
+        default="vllm",
         choices=["hf", "vllm"],
         help="Generation backend. vLLM is faster for large batches when available.",
     )
@@ -73,6 +74,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-repeat-ngram-size", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        default=int(os.environ.get("NUM_GPUS", "8")),
+        help=(
+            "Launch this many single-GPU shard workers. Use --num-gpus 1 to run "
+            "inside the current process."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        default=os.environ.get("GPU_IDS"),
+        help="Comma-separated GPU ids for shard workers. Defaults to 0..num_gpus-1.",
+    )
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-id", type=int, default=0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--max-num-seqs", type=int, default=8)
     parser.add_argument("--allowed-local-media-path", default=None)
@@ -237,15 +254,25 @@ def selected_bounds(total: int, start_index: int, limit: int | None) -> tuple[in
     return start, stop
 
 
+def validate_shard_args(args: argparse.Namespace) -> None:
+    if args.num_shards < 1:
+        raise ValueError("--num-shards must be >= 1")
+    if args.shard_id < 0 or args.shard_id >= args.num_shards:
+        raise ValueError("--shard-id must be in [0, num_shards)")
+
+
 def iter_pending_samples(
     data: list[dict[str, Any]],
     args: argparse.Namespace,
     roots: list[Path],
 ) -> Iterable[tuple[int, Path]]:
+    validate_shard_args(args)
     start, stop = selected_bounds(len(data), args.start_index, args.limit)
     missing_count = 0
 
     for index in range(start, stop):
+        if args.num_shards > 1 and index % args.num_shards != args.shard_id:
+            continue
         sample = data[index]
         try:
             message = assistant_message(sample)
@@ -350,7 +377,7 @@ def make_generation_args(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def generate_hf_captions(
-    items: list[tuple[int, Path]],
+    items: Iterable[tuple[int, Path]],
     args: argparse.Namespace,
 ) -> Iterable[tuple[int, str]]:
     import torch
@@ -390,7 +417,7 @@ def generate_hf_captions(
 
 
 def generate_vllm_captions(
-    items: list[tuple[int, Path]],
+    items: Iterable[tuple[int, Path]],
     args: argparse.Namespace,
 ) -> Iterable[tuple[int, str]]:
     from src.train.checkpoint_utils import prepare_inference_model_dir
@@ -452,6 +479,202 @@ def prepend_item(first: Any, rest: Iterable[Any]) -> Iterable[Any]:
     yield from rest
 
 
+def parse_gpu_ids(args: argparse.Namespace) -> list[str]:
+    if args.gpu_ids:
+        gpu_ids = [item.strip() for item in args.gpu_ids.split(",") if item.strip()]
+    else:
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if visible:
+            gpu_ids = [item.strip() for item in visible.split(",") if item.strip()]
+        else:
+            gpu_ids = [str(index) for index in range(args.num_gpus)]
+
+    if len(gpu_ids) < args.num_gpus:
+        raise ValueError(
+            f"Need {args.num_gpus} GPU ids, got {len(gpu_ids)}: {','.join(gpu_ids)}"
+        )
+    return gpu_ids[: args.num_gpus]
+
+
+def shard_output_path(output_path: Path, shard_id: int, num_shards: int) -> Path:
+    return output_path.with_name(
+        f"{output_path.stem}.shard{shard_id:02d}-of-{num_shards:02d}{output_path.suffix}"
+    )
+
+
+def add_optional_arg(cmd: list[str], name: str, value: Any) -> None:
+    if value is not None:
+        cmd.extend([name, str(value)])
+
+
+def build_worker_command(
+    args: argparse.Namespace,
+    shard_id: int,
+    shard_path: Path,
+) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--input",
+        args.input,
+        "--output",
+        str(shard_path),
+        "--model-path",
+        args.model_path,
+        "--model-type",
+        args.model_type,
+        "--backend",
+        args.backend,
+        "--caption-prompt",
+        args.caption_prompt,
+        "--caption-prefix",
+        args.caption_prefix,
+        "--max-new-tokens",
+        str(args.max_new_tokens),
+        "--model-max-length",
+        str(args.model_max_length),
+        "--dtype",
+        args.dtype,
+        "--device-map",
+        args.device_map,
+        "--temperature",
+        str(args.temperature),
+        "--top-p",
+        str(args.top_p),
+        "--repetition-penalty",
+        str(args.repetition_penalty),
+        "--no-repeat-ngram-size",
+        str(args.no_repeat_ngram_size),
+        "--batch-size",
+        str(args.batch_size),
+        "--tensor-parallel-size",
+        "1",
+        "--num-gpus",
+        "1",
+        "--num-shards",
+        str(args.num_gpus),
+        "--shard-id",
+        str(shard_id),
+        "--gpu-memory-utilization",
+        str(args.gpu_memory_utilization),
+        "--max-num-seqs",
+        str(args.max_num_seqs),
+        "--start-index",
+        str(args.start_index),
+        "--write-every",
+        str(args.write_every),
+    ]
+
+    for root in args.video_root or []:
+        cmd.extend(["--video-root", root])
+
+    add_optional_arg(cmd, "--attn-implementation", args.attn_implementation)
+    add_optional_arg(cmd, "--allowed-local-media-path", args.allowed_local_media_path)
+    add_optional_arg(cmd, "--video-fps", args.video_fps)
+    add_optional_arg(cmd, "--video-max-frames", args.video_max_frames)
+    add_optional_arg(cmd, "--video-min-pixels", args.video_min_pixels)
+    add_optional_arg(cmd, "--video-max-pixels", args.video_max_pixels)
+    add_optional_arg(cmd, "--limit", args.limit)
+
+    if args.overwrite_existing_captions:
+        cmd.append("--overwrite-existing-captions")
+    if args.skip_missing:
+        cmd.append("--skip-missing")
+    if args.force:
+        cmd.append("--force")
+    else:
+        cmd.append("--resume")
+    return cmd
+
+
+def merge_shard_outputs(
+    input_path: Path,
+    output_path: Path,
+    shard_paths: list[Path],
+    args: argparse.Namespace,
+) -> int:
+    if args.resume and output_path.exists():
+        merged = load_json(output_path)
+    else:
+        merged = load_json(input_path)
+
+    merged_count = 0
+    for shard_path in shard_paths:
+        shard_data = load_json(shard_path)
+        if len(shard_data) != len(merged):
+            raise ValueError(
+                f"{shard_path} length {len(shard_data)} does not match {len(merged)}"
+            )
+
+        for index, sample in enumerate(shard_data):
+            source_message = assistant_message(sample)
+            source_value = str(source_message.get("value", ""))
+            if not has_caption(source_value):
+                continue
+
+            target_message = assistant_message(merged[index])
+            target_value = str(target_message.get("value", ""))
+            if has_caption(target_value) and not args.overwrite_existing_captions:
+                continue
+            target_message["value"] = source_value
+            merged_count += 1
+
+    write_json(output_path, merged)
+    return merged_count
+
+
+def launch_gpu_shards(args: argparse.Namespace, input_path: Path, output_path: Path) -> None:
+    gpu_ids = parse_gpu_ids(args)
+    shard_paths = [
+        shard_output_path(output_path, shard_id, args.num_gpus)
+        for shard_id in range(args.num_gpus)
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(
+        f"launching {args.num_gpus} data-parallel workers on GPUs: {','.join(gpu_ids)}"
+    )
+    print("each worker uses tensor_parallel_size=1 and processes one shard")
+
+    processes: list[tuple[int, Path, subprocess.Popen[Any], Any]] = []
+    for shard_id, (gpu_id, shard_path) in enumerate(zip(gpu_ids, shard_paths)):
+        log_path = shard_path.with_suffix(shard_path.suffix + ".log")
+        log_file = log_path.open("w", encoding="utf-8")
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = gpu_id
+        env.setdefault("TOKENIZERS_PARALLELISM", "false")
+        cmd = build_worker_command(args, shard_id, shard_path)
+        print(f"[shard {shard_id}/{args.num_gpus}] GPU {gpu_id} -> {shard_path}")
+        process = subprocess.Popen(
+            cmd,
+            cwd=Path.cwd(),
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        processes.append((shard_id, log_path, process, log_file))
+
+    failed: list[tuple[int, Path, int]] = []
+    for shard_id, log_path, process, log_file in processes:
+        return_code = process.wait()
+        log_file.close()
+        if return_code != 0:
+            failed.append((shard_id, log_path, return_code))
+
+    if failed:
+        for shard_id, log_path, return_code in failed:
+            print(
+                f"[shard {shard_id}] failed with code {return_code}; log: {log_path}",
+                file=sys.stderr,
+            )
+        raise SystemExit("One or more GPU shard workers failed.")
+
+    merged_count = merge_shard_outputs(input_path, output_path, shard_paths, args)
+    print(f"merged captioned samples: {merged_count}")
+    print(f"wrote: {output_path}")
+
+
 def apply_captions(
     data: list[dict[str, Any]],
     captions: Iterable[tuple[int, str]],
@@ -482,6 +705,10 @@ def main() -> None:
         raise SystemExit(
             f"{output_path} already exists. Use --resume to continue or --force to overwrite."
         )
+
+    if args.num_gpus > 1 and args.num_shards == 1 and not args.check_only:
+        launch_gpu_shards(args, input_path, output_path)
+        return
 
     print(f"loading: {input_path}")
     if args.resume and output_path.exists():
