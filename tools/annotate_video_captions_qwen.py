@@ -13,6 +13,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from tqdm import tqdm
 from typing import Any, Iterable
 
 
@@ -251,7 +252,7 @@ def collect_pending(
     pending: list[tuple[int, Path]] = []
     missing: list[tuple[int, str]] = []
 
-    for index, sample in enumerate(data):
+    for index, sample in tqdm(enumerate(data), total=len(data), desc="Checking samples"):
         if index not in selected:
             continue
         try:
@@ -482,12 +483,15 @@ def main() -> None:
             f"{output_path} already exists. Use --resume to continue or --force to overwrite."
         )
 
+    print(f"loading: {input_path}")
     if args.resume and output_path.exists():
         data = load_json(output_path)
     else:
         data = load_json(input_path)
 
+    print("resolving video paths and checking existing captions...")
     roots = iter_video_roots(args)
+    print("collecting pending samples...")
     pending, missing = collect_pending(data, args, roots)
 
     print(f"input samples: {len(data)}")
