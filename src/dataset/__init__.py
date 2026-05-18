@@ -56,6 +56,16 @@ VIDEOREWARD_EVAL_POLISHED_V3 = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_T_MERGED_UNIQUE = {
+    "annotation_path": "./data/train_t_merged_unique.json",
+    "data_path": "./data",
+}
+
+VIDEOREWARD_EVAL_MERGED_UNIQUE = {
+    "annotation_path": "./data/eval_merged_unique.json",
+    "data_path": "./data",
+}
+
 data_dict = {
     "videoreward": VIDEOREWARD,
     "videoreward_t": VIDEOREWARD_T,
@@ -68,6 +78,8 @@ data_dict = {
     "videoreward_box_t_polished_v3_single": VIDEOREWARD_BOX_T_POLISHED_V3_SINGLE,
     "videoreward_eval_polished_v3": VIDEOREWARD_EVAL_POLISHED_V3,
     "videoreward_eval_merged": VIDEOREWARD_EVAL_MERGED,
+    "videoreward_t_merged_unique": VIDEOREWARD_T_MERGED_UNIQUE,
+    "videoreward_eval_merged_unique": VIDEOREWARD_EVAL_MERGED_UNIQUE,
 }
 
 
