@@ -23,7 +23,7 @@ QWEN_MODEL_TYPES = {"qwen3vl", "qwen2.5vl", "qwen2vl"}
 
 
 def parse_args():
-    default_model_path = os.environ.get("MODEL_PATH")
+    default_model_path = os.environ.get("MODEL_PATH", "output/qwen3vl-4b-1e-bs4-ga4-merged-unique-caption")
     parser = argparse.ArgumentParser(description="Qwen-VL video inference.")
     parser.add_argument(
         "--model_path",

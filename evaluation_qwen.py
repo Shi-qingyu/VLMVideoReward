@@ -20,4 +20,4 @@ def get_args():
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
-    run_eval(get_args(), allowed_model_types=QWEN_MODEL_TYPES, default_backend="vllm")
+    run_eval(get_args(), allowed_model_types=QWEN_MODEL_TYPES, default_backend="hf")

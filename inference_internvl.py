@@ -20,7 +20,7 @@ from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 def parse_args():
-    default_model_path = os.environ.get("MODEL_PATH")
+    default_model_path = os.environ.get("MODEL_PATH", "output/internvl35-4b-bs4-ga4-t-merged-unique-caption")
     parser = argparse.ArgumentParser(description="InternVL video inference.")
     parser.add_argument(
         "--model_path",

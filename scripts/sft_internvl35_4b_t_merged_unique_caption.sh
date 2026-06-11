@@ -1,21 +1,21 @@
 #!/bin/bash
 
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-"12349"}
+MASTER_PORT=${MASTER_PORT:-"12345"}
 NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
 deepspeed=${DEEPSPEED_CONFIG:-"./scripts/zero3.json"}
-llm=${LLM_MODEL:-"allenai/Molmo2-4B"}
+llm=${LLM_MODEL:-"OpenGVLab/InternVL3_5-4B-HF"}
 
 lr=${LR:-"5e-5"}
 batch_size=${BATCH_SIZE:-4}
 grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 
-entry_file=${ENTRY_FILE:-"src/train/train_molmo2_sft.py"}
-datasets=${DATASETS:-"videoreward_merged"}
+entry_file=${ENTRY_FILE:-"src/train/train_internvl_sft.py"}
+datasets=${DATASETS:-"videoreward_t_merged_unique_caption"}
 
-run_name=${RUN_NAME:-"molmo2-4b-baseline-bs${batch_size}-ga${grad_accum_steps}-fps${VIDEO_FPS:-2}-maxf${VIDEO_MAX_FRAMES:-20}-minf${VIDEO_MIN_FRAMES:-10}-imgsize${MOLMO2_IMAGE_SIZE:-378}-lr${lr}"}
+run_name=${RUN_NAME:-"internvl35-4b-bs${batch_size}-ga${grad_accum_steps}-t-merged-unique-caption"}
 output_dir=${OUTPUT_DIR:-"./output/${run_name}"}
 
 args="
@@ -38,8 +38,9 @@ args="
     --video_fps ${VIDEO_FPS:-2} \
     --video_max_frames ${VIDEO_MAX_FRAMES:-20} \
     --video_min_frames ${VIDEO_MIN_FRAMES:-10} \
-    --molmo2_image_size ${MOLMO2_IMAGE_SIZE:-378} \
-    --molmo2_video_frame_sampling_mode ${MOLMO2_VIDEO_FRAME_SAMPLING_MODE:-uniform_last_frame} \
+    --internvl_image_size ${INTERNVL_IMAGE_SIZE:-448} \
+    --internvl_max_patches ${INTERNVL_MAX_PATCHES:-12} \
+    --internvl_min_patches ${INTERNVL_MIN_PATCHES:-1} \
     --eval_strategy no \
     --save_strategy steps \
     --save_steps ${SAVE_STEPS:-100} \
@@ -57,7 +58,6 @@ args="
     --report_to ${REPORT_TO:-wandb}
 "
 
-ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa} \
 torchrun --nproc_per_node=${NPROC_PER_NODE} \
          --master_addr=${MASTER_ADDR} \
          --master_port=${MASTER_PORT} \
