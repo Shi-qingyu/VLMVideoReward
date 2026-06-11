@@ -66,6 +66,56 @@ VIDEOREWARD_EVAL_MERGED_UNIQUE = {
     "data_path": "./data",
 }
 
+VIDEOREWARD_T_MERGED_UNIQUE_CAPTION = {
+    "annotation_path": "./data/train_t_merged_unique_caption.json",
+    "data_path": "./data",
+}
+
+HUMAN_DISTORTION_SAMPLED = {
+    "annotation_path": "./data/human_distortion_sampled.json",
+    "data_path": "",
+}
+
+HUMAN_DISTORTION_SAMPLED_TRAIN = {
+    "annotation_path": "./data/human_distortion_sampled_train.json",
+    "data_path": "",
+}
+
+HUMAN_DISTORTION_SAMPLED_TEST = {
+    "annotation_path": "./data/human_distortion_sampled_test.json",
+    "data_path": "",
+}
+
+PHYSICS_VIOLATION_SAMPLED = {
+    "annotation_path": "./data/physics_violation_sampled.json",
+    "data_path": "",
+}
+
+PHYSICS_VIOLATION_SAMPLED_TRAIN = {
+    "annotation_path": "./data/physics_violation_sampled_train.json",
+    "data_path": "",
+}
+
+PHYSICS_VIOLATION_SAMPLED_TEST = {
+    "annotation_path": "./data/physics_violation_sampled_test.json",
+    "data_path": "",
+}
+
+PRODUCT_CONSISTENCY_SAMPLED = {
+    "annotation_path": "./data/product_consistency_sampled.json",
+    "data_path": "",
+}
+
+PRODUCT_CONSISTENCY_SAMPLED_TRAIN = {
+    "annotation_path": "./data/product_consistency_sampled_train.json",
+    "data_path": "",
+}
+
+PRODUCT_CONSISTENCY_SAMPLED_TEST = {
+    "annotation_path": "./data/product_consistency_sampled_test.json",
+    "data_path": "",
+}
+
 data_dict = {
     "videoreward": VIDEOREWARD,
     "videoreward_t": VIDEOREWARD_T,
@@ -80,6 +130,16 @@ data_dict = {
     "videoreward_eval_merged": VIDEOREWARD_EVAL_MERGED,
     "videoreward_t_merged_unique": VIDEOREWARD_T_MERGED_UNIQUE,
     "videoreward_eval_merged_unique": VIDEOREWARD_EVAL_MERGED_UNIQUE,
+    "videoreward_t_merged_unique_caption": VIDEOREWARD_T_MERGED_UNIQUE_CAPTION,
+    "human_distortion_sampled": HUMAN_DISTORTION_SAMPLED,
+    "human_distortion_sampled_train": HUMAN_DISTORTION_SAMPLED_TRAIN,
+    "human_distortion_sampled_test": HUMAN_DISTORTION_SAMPLED_TEST,
+    "physics_violation_sampled": PHYSICS_VIOLATION_SAMPLED,
+    "physics_violation_sampled_train": PHYSICS_VIOLATION_SAMPLED_TRAIN,
+    "physics_violation_sampled_test": PHYSICS_VIOLATION_SAMPLED_TEST,
+    "product_consistency_sampled": PRODUCT_CONSISTENCY_SAMPLED,
+    "product_consistency_sampled_train": PRODUCT_CONSISTENCY_SAMPLED_TRAIN,
+    "product_consistency_sampled_test": PRODUCT_CONSISTENCY_SAMPLED_TEST,
 }
 
 
