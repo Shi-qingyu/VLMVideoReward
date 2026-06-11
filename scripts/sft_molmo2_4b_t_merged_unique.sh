@@ -1,7 +1,7 @@
 #!/bin/bash
 
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-MASTER_PORT=${MASTER_PORT:-"12349"}
+MASTER_PORT=${MASTER_PORT:-"12345"}
 NNODES=${WORLD_SIZE:-1}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 
@@ -13,9 +13,9 @@ batch_size=${BATCH_SIZE:-4}
 grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 
 entry_file=${ENTRY_FILE:-"src/train/train_molmo2_sft.py"}
-datasets=${DATASETS:-"videoreward_merged"}
+datasets=${DATASETS:-"videoreward_t_merged_unique"}
 
-run_name=${RUN_NAME:-"molmo2-4b-baseline-bs${batch_size}-ga${grad_accum_steps}-fps${VIDEO_FPS:-2}-maxf${VIDEO_MAX_FRAMES:-20}-minf${VIDEO_MIN_FRAMES:-10}-imgsize${MOLMO2_IMAGE_SIZE:-378}-lr${lr}"}
+run_name=${RUN_NAME:-"molmo2-4b-bs${batch_size}-ga${grad_accum_steps}-t-merged-unique"}
 output_dir=${OUTPUT_DIR:-"./output/${run_name}"}
 
 args="

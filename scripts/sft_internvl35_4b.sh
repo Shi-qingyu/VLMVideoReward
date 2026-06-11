@@ -15,7 +15,7 @@ grad_accum_steps=${GRAD_ACCUM_STEPS:-4}
 entry_file=${ENTRY_FILE:-"src/train/train_internvl_sft.py"}
 datasets=${DATASETS:-"videoreward_merged"}
 
-run_name=${RUN_NAME:-"internvl35-4b-baseline-bs${batch_size}-ga${grad_accum_steps}"}
+run_name=${RUN_NAME:-"internvl35-4b-baseline-bs${batch_size}-ga${grad_accum_steps}-fps${VIDEO_FPS:-2}-maxf${VIDEO_MAX_FRAMES:-20}-minf${VIDEO_MIN_FRAMES:-10}-imgsize${INTERNVL_IMAGE_SIZE:-448}-maxp${INTERNVL_MAX_PATCHES:-12}-minp${INTERNVL_MIN_PATCHES:-1}"}
 output_dir=${OUTPUT_DIR:-"./output/${run_name}"}
 
 args="
@@ -35,11 +35,11 @@ args="
     --per_device_train_batch_size ${batch_size} \
     --per_device_eval_batch_size $((batch_size*2)) \
     --gradient_accumulation_steps ${grad_accum_steps} \
-    --video_fps ${VIDEO_FPS:-1} \
-    --video_max_frames ${VIDEO_MAX_FRAMES:-8} \
-    --video_min_frames ${VIDEO_MIN_FRAMES:-4} \
+    --video_fps ${VIDEO_FPS:-2} \
+    --video_max_frames ${VIDEO_MAX_FRAMES:-20} \
+    --video_min_frames ${VIDEO_MIN_FRAMES:-10} \
     --internvl_image_size ${INTERNVL_IMAGE_SIZE:-448} \
-    --internvl_max_patches ${INTERNVL_MAX_PATCHES:-4} \
+    --internvl_max_patches ${INTERNVL_MAX_PATCHES:-12} \
     --internvl_min_patches ${INTERNVL_MIN_PATCHES:-1} \
     --eval_strategy no \
     --save_strategy steps \
