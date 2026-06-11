@@ -33,6 +33,8 @@ MERGED_KEYS = [
     "Prompt Alignment",
 ]
 
+SINGLE_ISSUE_KEYS = ["Answer"]
+
 LEGACY_KEYS = [
     "Video Quality",
     "Subject Movement",
@@ -94,9 +96,12 @@ def add_common_eval_args(parser: argparse.ArgumentParser):
     parser.add_argument("--output_dir", type=str, default="eval_results")
     parser.add_argument(
         "--metric_schema",
-        choices=["auto", "merged", "legacy"],
+        choices=["auto", "merged", "legacy", "single_issue"],
         default="auto",
-        help="Metric dimensions: auto/merged use the 3-dim schema; legacy uses the old 7-dim schema.",
+        help=(
+            "Metric dimensions: auto/merged use the 3-dim schema; "
+            "legacy uses the old 7-dim schema; single_issue parses one Yes/No answer."
+        ),
     )
 
     parser.add_argument("--tensor_parallel_size", type=int, default=8)
@@ -135,6 +140,8 @@ def normalize_label(text: str) -> str:
 
 
 def metric_keys_from_schema(schema: str):
+    if schema == "single_issue":
+        return SINGLE_ISSUE_KEYS
     if schema == "legacy":
         return LEGACY_KEYS
     return MERGED_KEYS
@@ -167,10 +174,24 @@ def merge_legacy_to_merged(parsed_legacy):
     return merged
 
 
+def normalize_single_issue_label(text: str) -> str:
+    label = normalize_label(text)
+    if label != "fail":
+        return label
+
+    matches = re.findall(r"\b(yes|no)\b", "" if text is None else str(text), re.I)
+    if len(matches) == 1:
+        return normalize_label(matches[0])
+    return "fail"
+
+
 def parse_output(text: str, metric_keys):
     text = "" if text is None else str(text)
     answer_match = re.search(r"<answer>\s*(.*?)\s*(?:</answer>|$)", text, re.S | re.I)
     body = answer_match.group(1).strip() if answer_match else text.strip()
+
+    if metric_keys == SINGLE_ISSUE_KEYS:
+        return {"Answer": normalize_single_issue_label(body)}
 
     parsed = parse_key_value_pairs(body, metric_keys)
     if metric_keys == MERGED_KEYS and any(parsed.get(key) == "fail" for key in MERGED_KEYS):
@@ -365,9 +386,15 @@ def result_paths(args):
 
 def save_metrics(metrics_path, metric_keys, metrics, summary):
     with open(metrics_path, "w", encoding="utf-8") as f:
+        if metric_keys == SINGLE_ISSUE_KEYS:
+            metric_schema = "single_issue"
+        elif metric_keys == LEGACY_KEYS:
+            metric_schema = "legacy"
+        else:
+            metric_schema = "merged"
         json.dump(
             {
-                "metric_schema": "legacy" if metric_keys == LEGACY_KEYS else "merged",
+                "metric_schema": metric_schema,
                 "per_dim": metrics,
                 "overall": summary,
             },

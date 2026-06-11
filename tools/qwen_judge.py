@@ -13,6 +13,7 @@ template = """
 **Ground Truth:** {ground_truth}
 First, determine whether the sentiments expressed in the two evaluations are consistent. Then, further assess whether the reasons identified for those issues are also aligned.
 Based on the above criteria, assign a consistency score ranging from 0 to 1, where 0 indicates complete inconsistency and 1 indicates complete consistency. Please provide your judgment along with a clear explanation of your reasoning.
+End with a separate line exactly in this format: Consistency Score: <score>
 """
 
 
