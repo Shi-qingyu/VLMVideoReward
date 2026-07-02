@@ -14,7 +14,7 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 deepspeed=${DEEPSPEED_CONFIG:-"${SCRIPT_DIR}/zero3.json"}
 
 # Model configuration
-llm=${LLM_MODEL:-"Qwen/Qwen3-VL-2B-Instruct"}
+llm=${LLM_MODEL:-"Qwen/Qwen3-VL-4B-Instruct"}
 
 # Training hyperparameters
 lr=${LR:-5e-5}
@@ -31,7 +31,7 @@ entry_file=${ENTRY_FILE:-"${REPO_ROOT}/src/train/train_qwen_sft.py"}
 datasets=${DATASETS:-"physics_violation_sampled_train"}
 
 # Output configuration
-run_name=${RUN_NAME:-"qwen3vl-2b-physics-violation-bs${batch_size}-ga${grad_accum_steps}"}
+run_name=${RUN_NAME:-"qwen3vl-4b-physics-violation-bs${batch_size}-ga${grad_accum_steps}-fps${VIDEO_FPS:-2}-maxf${VIDEO_MAX_FRAMES:-20}-minf${VIDEO_MIN_FRAMES:-10}-imgsize${MOLMO2_IMAGE_SIZE:-378}-lr${lr}"}
 output_dir=${OUTPUT_DIR:-"${REPO_ROOT}/output/${run_name}"}
 
 args="

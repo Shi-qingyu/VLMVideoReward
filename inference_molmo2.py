@@ -12,7 +12,7 @@ from inference_common import (
 )
 
 
-DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4-t-merged-unique/checkpoint-200"
+DEFAULT_MODEL_PATH = "output/molmo2-4b-physics-violation-bs4-ga4-fps2-maxf20-minf10-imgsize378-lr5e-5"
 
 
 def parse_args():
