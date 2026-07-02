@@ -1148,6 +1148,7 @@ def preprocess_hf_chat_visual(
         video_content_kwargs=_build_video_content_kwargs(data_args),
     )
     template_kwargs = _build_hf_chat_template_kwargs(data_args)
+    template_kwargs = _cap_hf_chat_video_num_frames(template_kwargs, base_path, videos)
     full_result = processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -1159,6 +1160,33 @@ def preprocess_hf_chat_visual(
         full_result = _ensure_molmo2_trailing_eos(full_result, processor.tokenizer)
     full_result = _add_response_labels(full_result, processor.tokenizer)
     return full_result
+
+
+def _cap_hf_chat_video_num_frames(
+    template_kwargs: Dict[str, Any],
+    base_path: Path,
+    videos: List[str],
+) -> Dict[str, Any]:
+    requested_frames = _as_positive_int(template_kwargs.get("num_frames"))
+    if requested_frames is None or not videos:
+        return template_kwargs
+
+    source_frame_counts = []
+    for video in videos:
+        _, source_frames, _ = _read_video_metadata(_make_abs_paths(base_path, video))
+        if source_frames:
+            source_frame_counts.append(source_frames)
+
+    if not source_frame_counts:
+        return template_kwargs
+
+    capped_frames = min(requested_frames, min(source_frame_counts))
+    if capped_frames == requested_frames:
+        return template_kwargs
+
+    template_kwargs = dict(template_kwargs)
+    template_kwargs["num_frames"] = capped_frames
+    return template_kwargs
 
 
 def _build_video_content_kwargs(data_args) -> Dict[str, Any]:
@@ -2012,6 +2040,12 @@ class LazyRLDataset(Dataset):
                     time_instruction,
                     video_content_kwargs=_build_video_content_kwargs(self.data_args),
                 )
+                template_kwargs = _build_hf_chat_template_kwargs(self.data_args)
+                template_kwargs = _cap_hf_chat_video_num_frames(
+                    template_kwargs,
+                    base_path,
+                    videos,
+                )
 
                 assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
 
@@ -2029,7 +2063,7 @@ class LazyRLDataset(Dataset):
                     return_dict=True,
                     return_tensors="pt",
                     padding=True,
-                    **_build_hf_chat_template_kwargs(self.data_args),
+                    **template_kwargs,
                 )
 
                 return {
