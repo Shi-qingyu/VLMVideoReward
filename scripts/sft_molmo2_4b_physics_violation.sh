@@ -57,7 +57,7 @@ args="
     --gradient_checkpointing ${GRADIENT_CHECKPOINTING:-True} \
     --dataloader_num_workers ${DATALOADER_NUM_WORKERS:-8} \
     --run_name ${run_name} \
-    --report_to ${REPORT_TO:-wandb}
+    --report_to ${REPORT_TO:-none}
 "
 
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa} \
