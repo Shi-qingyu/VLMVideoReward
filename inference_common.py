@@ -1,9 +1,6 @@
-import inspect
 import os
 import random
 import re
-import textwrap
-import types
 from pathlib import Path
 
 import torch
@@ -137,50 +134,42 @@ def patch_molmo2_vision_pooling_device(model):
 
     forward_attr = "_old_forward" if hasattr(vision_backbone, "_old_forward") else "forward"
     original_forward = getattr(vision_backbone, forward_attr)
-    forward_func = getattr(original_forward, "__func__", original_forward)
 
-    try:
-        source = textwrap.dedent(inspect.getsource(forward_func))
-    except (OSError, TypeError):
-        return
+    def patched_forward(*args, **kwargs):
+        device = module_device(vision_backbone)
+        if device is None:
+            return original_forward(*args, **kwargs)
+        args = list(args)
+        if len(args) > 1:
+            args[1] = move_nested_tensors(args[1], device)
+        for key in ("token_pooling", "pooled_patches_idx"):
+            if key in kwargs:
+                kwargs[key] = move_nested_tensors(kwargs[key], device)
+        args = tuple(args)
+        return original_forward(*args, **kwargs)
 
-    source = source[source.find("def ") :]
-    replacements = {
-        "valid = pooled_patches_idx >= 0": (
-            "pooled_patches_idx = pooled_patches_idx.to(image_features.device)\n"
-            "        valid = pooled_patches_idx >= 0"
-        ),
-        (
-            "to_pool = image_features.reshape(batch_size, -1, dim)"
-            "[batch_idx, torch.clip(pooled_patches_idx, 0)]"
-        ): (
-            "batch_idx = batch_idx.to(image_features.device)\n"
-            "        to_pool = image_features.reshape(batch_size, -1, dim)"
-            "[batch_idx, torch.clip(pooled_patches_idx, 0)]"
-        ),
-        (
-            "return pooled_features.view(-1, pooled_features.shape[-1])"
-            "[valid_token.flatten()]"
-        ): (
-            "return pooled_features.view(-1, pooled_features.shape[-1])"
-            "[valid_token.flatten().to(pooled_features.device)]"
-        ),
-    }
-    for old, new in replacements.items():
-        source = source.replace(old, new, 1)
+    setattr(vision_backbone, forward_attr, patched_forward)
 
-    namespace = dict(forward_func.__globals__)
-    try:
-        exec(source, namespace)
-    except Exception:
-        return
-    patched_forward = namespace.get(forward_func.__name__)
-    if patched_forward is not None:
-        setattr(
-            vision_backbone,
-            forward_attr,
-            types.MethodType(patched_forward, vision_backbone),
-        )
+
+def module_device(module):
+    device = None
+    for tensor_fn in (module.parameters, module.buffers):
+        for tensor in tensor_fn(recurse=True):
+            if tensor.device.type != "meta":
+                device = tensor.device
+    return device
+
+
+def move_nested_tensors(value, device):
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, dict):
+        return {key: move_nested_tensors(item, device) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(move_nested_tensors(item, device) for item in value)
+    if isinstance(value, list):
+        return [move_nested_tensors(item, device) for item in value]
+    return value
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
