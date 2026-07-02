@@ -20,6 +20,8 @@ from transformers import (
     StoppingCriteriaList,
 )
 
+from src.dataset.data_processor import _build_video_time_instruction
+
 
 DEFAULT_VIDEO_PATH = "data/videos/eval_0/1.mp4"
 DEFAULT_VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "2"))
@@ -480,7 +482,23 @@ def configure_internvl_processor(processor, model, args):
 
 
 def build_video_content_kwargs(model_type: str, args) -> dict:
-    return {}
+    if model_type != "molmo2":
+        return {}
+
+    kwargs = {}
+    video_max_frames = getattr(args, "video_max_frames", None)
+    if video_max_frames is not None:
+        kwargs["num_frames"] = int(video_max_frames)
+
+    video_fps = getattr(args, "video_fps", None)
+    if video_fps is not None and video_fps > 0:
+        kwargs["max_fps"] = float(video_fps)
+
+    frame_sampling_mode = getattr(args, "molmo2_video_frame_sampling_mode", None)
+    if frame_sampling_mode:
+        kwargs["frame_sampling_mode"] = frame_sampling_mode
+
+    return kwargs
 
 
 def build_messages(
@@ -515,46 +533,35 @@ def normalize_molmo2_messages(messages):
     return normalized
 
 
-def get_metadata_value(metadata, key: str):
-    if isinstance(metadata, dict):
-        return metadata.get(key)
-    return getattr(metadata, key, None)
-
-
-def maybe_add_qwen_time_instruction(messages, processor):
-    video_processor = getattr(processor, "video_processor", None)
-    if video_processor is None:
+def add_video_time_instruction(messages, processor, args=None):
+    if not messages:
         return
 
-    if not hasattr(video_processor, "temporal_patch_size") or not hasattr(
-        video_processor, "fps"
-    ):
+    content = messages[0].get("content", [])
+    if not isinstance(content, list):
         return
 
-    video_path = messages[0]["content"][0].get("video")
-    videos = [video_path] if isinstance(video_path, str) else video_path
-    if not videos:
+    video_paths = [
+        part.get("video")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "video" and part.get("video")
+    ]
+    if not video_paths:
         return
 
-    vp_output = video_processor(videos=videos, return_metadata=True)
-    video_grid_thw = getattr(vp_output, "video_grid_thw", None)
-    video_metadata = getattr(vp_output, "video_metadata", None)
-    if video_grid_thw is None or not video_metadata:
-        return
-
-    sample_fps = video_processor.fps
-    temporal_patch_size = video_processor.temporal_patch_size
-    total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
-    duration = get_metadata_value(video_metadata[0], "duration")
-    if duration is None:
-        return
-
-    time_instruction = (
-        f"This video is uniformly sampled at {sample_fps:.2f} fps, contains "
-        f"{total_frames} frames from 0 seconds to {float(duration):.1f} seconds."
+    time_instruction = _build_video_time_instruction(
+        Path(""),
+        video_paths,
+        processor,
+        args,
     )
-    text_content = messages[0]["content"][1]
-    text_content["text"] = f"{time_instruction}\n{text_content['text']}"
+    if not time_instruction:
+        return
+
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            part["text"] = f"{time_instruction}\n{part['text']}"
+            return
 
 
 def build_template_kwargs(model_type: str, args):

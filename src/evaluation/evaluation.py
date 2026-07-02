@@ -1,19 +1,29 @@
 import argparse
 import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+EVALUATION_DIR = Path(__file__).resolve().parent
 
 
 ENTRYPOINTS = {
-    "qwen3vl": "inference_qwen.py",
-    "qwen2.5vl": "inference_qwen.py",
-    "qwen2vl": "inference_qwen.py",
-    "internvl": "inference_internvl.py",
-    "molmo2": "inference_molmo2.py",
+    "qwen3vl": EVALUATION_DIR / "evaluation_qwen.py",
+    "qwen2.5vl": EVALUATION_DIR / "evaluation_qwen.py",
+    "qwen2vl": EVALUATION_DIR / "evaluation_qwen.py",
+    "internvl": EVALUATION_DIR / "evaluation_internvl.py",
+    "gemma4": EVALUATION_DIR / "evaluation_gemma4.py",
+    "minicpmv": EVALUATION_DIR / "evaluation_minicpmv.py",
+    "molmo2": EVALUATION_DIR / "evaluation_molmo2.py",
 }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Compatibility shim. Use a model-specific inference file instead.",
+        description="Compatibility shim. Use a model-specific evaluation file instead.",
     )
     parser.add_argument("--model_path", default=os.environ.get("MODEL_PATH"))
     parser.add_argument(
@@ -38,8 +48,8 @@ def main():
     if not args.model_path:
         raise SystemExit(
             "Use a model-specific entrypoint, e.g. "
-            "`python inference_qwen.py --model_path ...` or "
-            "`python inference_internvl.py --model_path ...`."
+            "`python src/evaluation/evaluation_qwen.py --model_path ...` or "
+            "`python src/evaluation/evaluation_internvl.py --model_path ...`."
         )
 
     if args.model_type == "auto":
@@ -48,10 +58,11 @@ def main():
         model_type = infer_model_type(args.model_path)
     else:
         model_type = args.model_type
+
     entrypoint = ENTRYPOINTS.get(model_type)
     if entrypoint is None:
         raise SystemExit(
-            f"No standalone inference entrypoint is configured for {model_type} yet."
+            f"No standalone evaluation entrypoint is configured for {model_type} yet."
         )
 
     raise SystemExit(

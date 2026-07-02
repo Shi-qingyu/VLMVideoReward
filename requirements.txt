@@ -26,17 +26,10 @@ tqdm==4.67.3
 scipy==1.17.1
 sentencepiece==0.2.1
 
-# Local V-JEPA distillation path.
-einops==0.8.2
-timm==1.0.26
-
 # Evaluation and helper scripts.
 vllm==0.11.0
 openai==2.29.0
 huggingface-hub==0.36.2
-
-# GRPO/DPO trainers import TRL, but it was not present in the pasted env.
-trl>=0.15
 
 # Optional tool-only dependencies not present in the pasted env:
 # binpacking

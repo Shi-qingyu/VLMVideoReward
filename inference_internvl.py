@@ -6,6 +6,7 @@ import torch
 from inference_common import (
     DEFAULT_PROMPT,
     DEFAULT_VIDEO_PATH,
+    add_video_time_instruction,
     build_generation_kwargs,
     build_messages,
     build_template_kwargs,
@@ -16,7 +17,6 @@ from inference_common import (
     prepare_processor,
     trim_repeated_response,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 def parse_args():
@@ -69,8 +69,9 @@ def resolve_internvl_model_type(args, model_path: str) -> str:
 
 def main():
     args = parse_args()
-    inference_model_path = prepare_inference_model_dir(args.model_path)
+    inference_model_path = args.model_path
     model_type = resolve_internvl_model_type(args, inference_model_path)
+    args.model_type = model_type
 
     model = load_model(
         inference_model_path,
@@ -84,6 +85,7 @@ def main():
     configure_internvl_processor(processor, model, args)
 
     messages = build_messages(args.video, args.prompt, model_type)
+    add_video_time_instruction(messages, processor, args)
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,

@@ -56,19 +56,6 @@ def _normalize_media_list(media):
     return list(media)
 
 
-def _resolve_media_paths(source: Dict[str, Any]) -> tuple[List[str], List[str]]:
-    base_path = Path(source.get("data_path", ""))
-    images = [
-        _make_abs_paths(base_path, img)
-        for img in _normalize_media_list(source.get("images"))
-    ]
-    videos = [
-        _make_abs_paths(base_path, vid)
-        for vid in _normalize_media_list(source.get("videos"))
-    ]
-    return images, videos
-
-
 def _get_tag_token_ids(tokenizer, tag: str) -> List[int]:
     cache = getattr(tokenizer, "_special_tag_token_ids", None)
     if cache is None:
@@ -409,31 +396,208 @@ def _extend_supervision_boundary(tokenizer, tokens: List[int], label_end: int) -
     return label_end
 
 
-def _build_video_time_instruction(base_path: Path, videos: List[str], processor) -> str:
-    video_processor = getattr(processor, "video_processor", None)
-    if not videos or video_processor is None:
-        return ""
-    if not hasattr(video_processor, "fps") or not hasattr(
-        video_processor, "temporal_patch_size"
-    ):
-        return ""
+def _as_positive_float(value) -> Optional[float]:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
-    sample_fps = video_processor.fps
-    temporal_patch_size = video_processor.temporal_patch_size
-    if sample_fps is None or temporal_patch_size is None:
+
+def _as_positive_int(value) -> Optional[int]:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _metadata_value(metadata, key: str):
+    if isinstance(metadata, dict):
+        return metadata.get(key)
+    return getattr(metadata, key, None)
+
+
+def _read_video_metadata(video_path: str) -> tuple[Optional[float], Optional[int], Optional[float]]:
+    try:
+        from decord import VideoReader, cpu
+
+        reader = VideoReader(video_path, ctx=cpu(0))
+        source_frames = len(reader)
+        source_fps = _as_positive_float(reader.get_avg_fps())
+        duration = source_frames / source_fps if source_frames and source_fps else None
+        return duration, source_frames, source_fps
+    except Exception:
+        pass
+
+    try:
+        from torchvision.io import read_video_timestamps
+
+        timestamps, source_fps = read_video_timestamps(video_path, pts_unit="sec")
+        source_frames = len(timestamps)
+        source_fps = _as_positive_float(source_fps)
+        duration = None
+        if source_frames and source_fps:
+            duration = float(timestamps[-1]) + 1.0 / source_fps
+        return duration, source_frames, source_fps
+    except Exception:
+        return None, None, None
+
+
+def _first_video_processor_fps(video_processor) -> Optional[float]:
+    for attr_name in ("fps", "max_fps"):
+        fps = _as_positive_float(getattr(video_processor, attr_name, None))
+        if fps is not None:
+            return fps
+    return None
+
+
+def _processor_video_time_info(video_processor, video_pool: List[str]):
+    if video_processor is None or not hasattr(video_processor, "temporal_patch_size"):
+        return None, None, None
+
+    temporal_patch_size = _as_positive_int(
+        getattr(video_processor, "temporal_patch_size", None)
+    )
+    if temporal_patch_size is None:
+        return None, None, None
+
+    try:
+        vp_output = video_processor(videos=video_pool, return_metadata=True)
+    except Exception:
+        return None, None, None
+
+    video_grid_thw = getattr(vp_output, "video_grid_thw", None)
+    video_metadata = getattr(vp_output, "video_metadata", None)
+    if video_grid_thw is None:
+        return None, None, None
+
+    try:
+        grid_t = video_grid_thw[0][0]
+        if hasattr(grid_t, "item"):
+            grid_t = grid_t.item()
+        sampled_frames = int(grid_t * temporal_patch_size)
+    except Exception:
+        sampled_frames = None
+
+    duration = None
+    if video_metadata:
+        duration = _as_positive_float(_metadata_value(video_metadata[0], "duration"))
+
+    return _first_video_processor_fps(video_processor), sampled_frames, duration
+
+
+def _resolve_sampled_video_frames(
+    video_processor,
+    data_args,
+    source_frames: Optional[int],
+    duration: Optional[float],
+    sample_fps: Optional[float],
+) -> Optional[int]:
+    model_type = getattr(data_args, "model_type", "")
+    for attr_name in ("num_frames", "max_frames"):
+        sampled_frames = _as_positive_int(getattr(video_processor, attr_name, None))
+        if sampled_frames is not None:
+            return min(sampled_frames, source_frames) if source_frames else sampled_frames
+
+    data_args_frame_limit_applies = model_type.startswith("qwen") or model_type in {
+        "internvl",
+        "minicpmv",
+        "molmo2",
+    }
+    sampled_frames = (
+        _as_positive_int(getattr(data_args, "video_max_frames", None))
+        if data_args_frame_limit_applies
+        else None
+    )
+    if sampled_frames is not None:
+        return min(sampled_frames, source_frames) if source_frames else sampled_frames
+
+    if duration is not None and sample_fps is not None:
+        sampled_frames = max(1, int(round(duration * sample_fps)))
+        return min(sampled_frames, source_frames) if source_frames else sampled_frames
+
+    return source_frames
+
+
+def _resolve_sample_fps(
+    video_processor,
+    data_args,
+    duration: Optional[float],
+    sampled_frames: Optional[int],
+) -> Optional[float]:
+    model_type = getattr(data_args, "model_type", "")
+    uses_fixed_frame_count = (
+        model_type in {"internvl", "minicpmv"}
+        and _as_positive_int(getattr(data_args, "video_max_frames", None)) is not None
+    )
+
+    if not uses_fixed_frame_count:
+        sample_fps = _first_video_processor_fps(video_processor)
+        if sample_fps is not None:
+            return sample_fps
+
+        sample_fps = _as_positive_float(getattr(data_args, "video_fps", None))
+        if sample_fps is not None:
+            return sample_fps
+
+    if duration is not None and sampled_frames is not None:
+        return sampled_frames / duration
+
+    return None
+
+
+def _format_video_time_instruction(
+    sample_fps: Optional[float],
+    sampled_frames: Optional[int],
+    duration: Optional[float],
+) -> str:
+    if sample_fps is None or sampled_frames is None or duration is None:
+        return ""
+    return (
+        f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {sampled_frames} frames "
+        f"from 0 seconds to {duration:.1f} seconds."
+    )
+
+
+def _build_video_time_instruction(
+    base_path: Path,
+    videos: List[str],
+    processor,
+    data_args=None,
+) -> str:
+    if not videos:
         return ""
 
     video_pool = [_make_abs_paths(base_path, vid) for vid in videos]
-    vp_output = video_processor(videos=video_pool, return_metadata=True)
-    video_metadata = vp_output.video_metadata[0]
-    video_grid_thw = vp_output.video_grid_thw
-
-    total_frames = int(video_grid_thw[0][0] * temporal_patch_size)
-    duration = video_metadata["duration"]
-    return (
-        f"This video is uniformly sampled at {sample_fps:.2f} fps, contains {total_frames} frames "
-        f"from 0 seconds to {duration:.1f} seconds."
+    video_processor = getattr(processor, "video_processor", None)
+    sample_fps, sampled_frames, duration = _processor_video_time_info(
+        video_processor,
+        video_pool,
     )
+
+    source_frames = None
+    if duration is None or sampled_frames is None or sample_fps is None:
+        source_duration, source_frames, _source_fps = _read_video_metadata(video_pool[0])
+        duration = duration or source_duration
+
+    sampled_frames = sampled_frames or _resolve_sampled_video_frames(
+        video_processor,
+        data_args,
+        source_frames,
+        duration,
+        sample_fps,
+    )
+    sample_fps = sample_fps or _resolve_sample_fps(
+        video_processor,
+        data_args,
+        duration,
+        sampled_frames,
+    )
+
+    if duration is None or duration <= 0:
+        return ""
+    return _format_video_time_instruction(sample_fps, sampled_frames, duration)
 
 
 def _load_rgb_image(image_path: str) -> Image.Image:
@@ -570,49 +734,6 @@ def _add_response_labels(full_result: Dict[str, Any], tokenizer) -> Dict[str, An
     full_result["labels"] = labels
     full_result["input_ids"] = input_ids
     return full_result
-
-
-def _prepare_shared_qwen_visual_inputs(
-    messages: List[Dict[str, Any]],
-    processor,
-) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    from qwen_vl_utils import process_vision_info
-
-    image_patch_size = int(getattr(processor.image_processor, "patch_size", 14))
-    rendered_text = processor.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-    image_inputs, video_inputs, video_kwargs = process_vision_info(
-        messages,
-        image_patch_size=image_patch_size,
-        return_video_kwargs=True,
-        return_video_metadata=True,
-    )
-
-    video_metadatas = []
-    videos = None
-    if video_inputs is not None:
-        videos, video_metadatas = zip(*video_inputs)
-        videos = list(videos)
-        video_metadatas = list(video_metadatas)
-
-    processor_kwargs = {
-        "text": [rendered_text],
-        "return_tensors": "pt",
-        "do_resize": False,
-        **video_kwargs,
-    }
-    if image_inputs is not None:
-        processor_kwargs["images"] = image_inputs
-    if videos is not None:
-        processor_kwargs["videos"] = videos
-    if video_metadatas:
-        processor_kwargs["video_metadata"] = video_metadatas
-
-    full_result = processor(**processor_kwargs)
-    return full_result, video_metadatas
 
 
 def update_processor_pixels(processor, data_args):
@@ -976,7 +1097,7 @@ def preprocess_qwen_visual(
     sources,
     processor,
     using_cot: bool = True,
-    share_distill_video_sampling: bool = False,
+    data_args=None,
 ) -> Dict:
     if len(sources) != 1:
         raise ValueError(f"Expected 1 source, got {len(sources)}")
@@ -985,31 +1106,19 @@ def preprocess_qwen_visual(
     base_path = Path(source.get("data_path", ""))
 
     videos = _normalize_media_list(source.get("videos"))
-    time_instruction = _build_video_time_instruction(base_path, videos, processor)
+    time_instruction = _build_video_time_instruction(
+        base_path,
+        videos,
+        processor,
+        data_args,
+    )
 
     messages = _build_messages(source, base_path, using_cot, time_instruction)
-    video_metadatas = []
-    if share_distill_video_sampling:
-        try:
-            full_result, video_metadatas = _prepare_shared_qwen_visual_inputs(
-                messages,
-                processor,
-            )
-        except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "Falling back to processor.apply_chat_template for visual inputs because shared Qwen video sampling failed: %s",
-                exc,
-            )
-            full_result = processor.apply_chat_template(
-                messages, tokenize=True, return_dict=True, return_tensors="pt"
-            )
-    else:
-        full_result = processor.apply_chat_template(
-            messages, tokenize=True, return_dict=True, return_tensors="pt"
-        )
+    full_result = processor.apply_chat_template(
+        messages, tokenize=True, return_dict=True, return_tensors="pt"
+    )
 
     full_result = _add_response_labels(full_result, processor.tokenizer)
-    full_result["distill_video_metadatas"] = video_metadatas
     return full_result
 
 
@@ -1024,11 +1133,18 @@ def preprocess_hf_chat_visual(
 
     source = sources[0]
     base_path = Path(source.get("data_path", ""))
+    videos = _normalize_media_list(source.get("videos"))
+    time_instruction = _build_video_time_instruction(
+        base_path,
+        videos,
+        processor,
+        data_args,
+    )
     messages = _build_messages(
         source,
         base_path,
         using_cot,
-        time_instruction="",
+        time_instruction=time_instruction,
         video_content_kwargs=_build_video_content_kwargs(data_args),
     )
     template_kwargs = _build_hf_chat_template_kwargs(data_args)
@@ -1042,7 +1158,6 @@ def preprocess_hf_chat_visual(
     if data_args is not None and getattr(data_args, "model_type", "") == "molmo2":
         full_result = _ensure_molmo2_trailing_eos(full_result, processor.tokenizer)
     full_result = _add_response_labels(full_result, processor.tokenizer)
-    full_result["distill_video_metadatas"] = []
     return full_result
 
 
@@ -1108,6 +1223,7 @@ def _build_minicpmv_messages_and_images(
     using_cot: bool,
     max_video_frames: Optional[int],
     video_group_size: int,
+    time_instruction: str = "",
 ) -> tuple[List[Dict[str, str]], List[Image.Image], List[List[int]]]:
     images = _normalize_media_list(item.get("images"))
     videos = _normalize_media_list(item.get("videos"))
@@ -1157,7 +1273,11 @@ def _build_minicpmv_messages_and_images(
                     )
                     content_parts.append("\n".join(frame_placeholders))
                 elif seg.strip():
-                    content_parts.append(seg.strip())
+                    text_segment = seg.strip()
+                    if time_instruction:
+                        text_segment = f"{time_instruction}\n{text_segment}"
+                        time_instruction = ""
+                    content_parts.append(text_segment)
 
             messages.append({"role": role, "content": "\n".join(content_parts)})
         else:
@@ -1187,12 +1307,20 @@ def preprocess_minicpmv_visual(
 
     source = sources[0]
     base_path = Path(source.get("data_path", ""))
+    videos = _normalize_media_list(source.get("videos"))
+    time_instruction = _build_video_time_instruction(
+        base_path,
+        videos,
+        processor,
+        data_args,
+    )
     messages, input_images, temporal_groups = _build_minicpmv_messages_and_images(
         source,
         base_path,
         getattr(data_args, "using_cot", True),
         getattr(data_args, "video_max_frames", None),
         getattr(data_args, "minicpmv_video_group_size", 6),
+        time_instruction,
     )
     rendered_text = processor.tokenizer.apply_chat_template(
         messages,
@@ -1220,7 +1348,6 @@ def preprocess_minicpmv_visual(
     position_ids = attention_mask.long().cumsum(dim=-1) - 1
     position_ids.masked_fill_(attention_mask.eq(0), 0)
     full_result["position_ids"] = position_ids
-    full_result["distill_video_metadatas"] = []
     full_result["_model_type"] = "minicpmv"
     return full_result
 
@@ -1393,12 +1520,6 @@ class LazySupervisedDataset(Dataset):
                     1,
                     dtype=torch.long,
                 )
-            image_paths, video_paths = _resolve_media_paths(sources[0])
-            data_dict["distill_image_paths"] = image_paths
-            data_dict["distill_video_paths"] = video_paths
-            data_dict["distill_video_metadatas"] = data_dict.get(
-                "distill_video_metadatas", []
-            )
             return data_dict
 
         if self.model_type == "minicpmv":
@@ -1407,21 +1528,14 @@ class LazySupervisedDataset(Dataset):
                 self.processor,
                 self.data_args,
             )
-            image_paths, video_paths = _resolve_media_paths(sources[0])
-            data_dict["distill_image_paths"] = image_paths
-            data_dict["distill_video_paths"] = video_paths
-            data_dict["distill_video_metadatas"] = data_dict.get(
-                "distill_video_metadatas", []
-            )
             return data_dict
 
         data_dict = preprocess_qwen_visual(
             sources,
             self.processor,
             self.data_args.using_cot,
-            getattr(self.data_args, "distill_share_student_video_sampling", False),
+            self.data_args,
         )
-        image_paths, video_paths = _resolve_media_paths(sources[0])
 
         seq_len = data_dict["input_ids"][0].size(0)
 
@@ -1456,11 +1570,6 @@ class LazySupervisedDataset(Dataset):
 
         data_dict["position_ids"] = position_ids
         data_dict["attention_mask"] = [seq_len]
-        data_dict["distill_image_paths"] = image_paths
-        data_dict["distill_video_paths"] = video_paths
-        data_dict["distill_video_metadatas"] = data_dict.get(
-            "distill_video_metadatas", []
-        )
 
         return data_dict
 
@@ -1495,21 +1604,6 @@ class LazySupervisedDataset(Dataset):
             "labels": labels,
             "position_ids": position_ids,
             "attention_mask": attention_mask if attention_mask else None,
-            "distill_image_paths": list(
-                itertools.chain.from_iterable(
-                    d.get("distill_image_paths", []) for d in data_list
-                )
-            ),
-            "distill_video_paths": list(
-                itertools.chain.from_iterable(
-                    d.get("distill_video_paths", []) for d in data_list
-                )
-            ),
-            "distill_video_metadatas": list(
-                itertools.chain.from_iterable(
-                    d.get("distill_video_metadatas", []) for d in data_list
-                )
-            ),
         }
 
         if any("pixel_values" in d for d in data_list):
@@ -1720,15 +1814,6 @@ class DataCollatorForSupervisedDataset(object):
             if value is not None:
                 batch[key] = value
 
-        batch["distill_image_paths"] = [
-            instance.get("distill_image_paths", []) for instance in instances
-        ]
-        batch["distill_video_paths"] = [
-            instance.get("distill_video_paths", []) for instance in instances
-        ]
-        batch["distill_video_metadatas"] = [
-            instance.get("distill_video_metadatas", []) for instance in instances
-        ]
         return batch
 
     def _collate_minicpmv(self, instances: Sequence[Dict]) -> Dict[str, Any]:
@@ -1781,15 +1866,6 @@ class DataCollatorForSupervisedDataset(object):
             "data": data,
             "labels": labels,
             "attention_mask": attention_mask,
-            "distill_image_paths": [
-                instance.get("distill_image_paths", []) for instance in instances
-            ],
-            "distill_video_paths": [
-                instance.get("distill_video_paths", []) for instance in instances
-            ],
-            "distill_video_metadatas": [
-                instance.get("distill_video_metadatas", []) for instance in instances
-            ],
         }
 
 
@@ -1863,15 +1939,6 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         batch["image_grid_thw"] = grid_thw
         batch["pixel_values_videos"] = concat_videos
         batch["video_grid_thw"] = video_grid_thw
-        batch["distill_image_paths"] = [
-            instance.get("distill_image_paths", []) for instance in instances
-        ]
-        batch["distill_video_paths"] = [
-            instance.get("distill_video_paths", []) for instance in instances
-        ]
-        batch["distill_video_metadatas"] = [
-            instance.get("distill_video_metadatas", []) for instance in instances
-        ]
 
         return batch
 
@@ -1932,11 +1999,11 @@ class LazyRLDataset(Dataset):
                 base_path = Path(source.get("data_path", ""))
 
                 videos = _normalize_media_list(source.get("videos"))
-                model_type = getattr(self.data_args, "model_type", "")
-                time_instruction = (
-                    _build_video_time_instruction(base_path, videos, self.processor)
-                    if model_type.startswith("qwen")
-                    else ""
+                time_instruction = _build_video_time_instruction(
+                    base_path,
+                    videos,
+                    self.processor,
+                    self.data_args,
                 )
                 messages = _build_messages(
                     source,

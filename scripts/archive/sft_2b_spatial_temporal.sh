@@ -68,7 +68,7 @@ torchrun --nproc_per_node=${NPROC_PER_NODE} \
          ${entry_file} ${args}
 
 
-python evaluation.py --model_path output/qwen3vl-2b-baseline-1e-bs4-ga4-st-new
+python src/evaluation/evaluation_qwen.py --model_path output/qwen3vl-2b-baseline-1e-bs4-ga4-st-new
 
 
 cd /mnt/bn/xiangtai-training-data-video/scripts

@@ -12,18 +12,18 @@ import torch
 
 from inference_common import (
     DEFAULT_VIDEO_FPS,
+    add_video_time_instruction,
     build_generation_kwargs,
     build_template_kwargs,
+    build_video_content_kwargs,
     configure_internvl_processor,
     infer_model_type,
     load_model,
     load_processor,
-    maybe_add_qwen_time_instruction,
     normalize_molmo2_messages,
     prepare_processor,
     trim_repeated_response,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 SUPPORTED_MODEL_TYPES = {
@@ -75,6 +75,10 @@ def parse_args():
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)
+    parser.add_argument(
+        "--molmo2_video_frame_sampling_mode",
+        default="uniform_last_frame",
+    )
     parser.add_argument(
         "--attn_implementation",
         default=os.environ.get("ATTN_IMPLEMENTATION"),
@@ -135,17 +139,20 @@ def make_abs_media_path(media_path: str) -> str:
     return str(path if path.is_absolute() else path.resolve())
 
 
-def build_messages_from_sample(sample: dict[str, Any], model_type: str):
+def build_messages_from_sample(sample: dict[str, Any], model_type: str, args):
     prompt = extract_human_prompt(sample)
     videos = [make_abs_media_path(video) for video in normalize_media_list(sample.get("videos"))]
     images = [make_abs_media_path(image) for image in normalize_media_list(sample.get("images"))]
+    video_content_kwargs = build_video_content_kwargs(model_type, args)
 
     content = []
     for part in re.split(r"(<image>|<video>)", prompt):
         if part == "<video>":
             if not videos:
                 raise ValueError("Prompt contains <video>, but sample has no videos.")
-            content.append({"type": "video", "video": videos.pop(0)})
+            video_content = {"type": "video", "video": videos.pop(0)}
+            video_content.update(video_content_kwargs)
+            content.append(video_content)
         elif part == "<image>":
             if not images:
                 raise ValueError("Prompt contains <image>, but sample has no images.")
@@ -183,8 +190,9 @@ def main():
     data = load_dataset(args.dataset)
     sample_index, sample = choose_sample(data, args)
 
-    inference_model_path = prepare_inference_model_dir(args.model_path)
+    inference_model_path = args.model_path
     model_type = resolve_model_type(args, inference_model_path)
+    args.model_type = model_type
 
     model = load_model(
         inference_model_path,
@@ -198,9 +206,8 @@ def main():
     if model_type == "internvl":
         configure_internvl_processor(processor, model, args)
 
-    messages = build_messages_from_sample(sample, model_type)
-    if model_type in {"qwen3vl", "qwen2.5vl", "qwen2vl"}:
-        maybe_add_qwen_time_instruction(messages, processor)
+    messages = build_messages_from_sample(sample, model_type, args)
+    add_video_time_instruction(messages, processor, args)
 
     inputs = processor.apply_chat_template(
         messages,

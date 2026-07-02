@@ -346,9 +346,8 @@ def load_hf_model(args: argparse.Namespace):
         load_processor,
         prepare_processor,
     )
-    from src.train.checkpoint_utils import prepare_inference_model_dir
 
-    inference_model_path = prepare_inference_model_dir(args.model_path)
+    inference_model_path = args.model_path
     model_type = (
         infer_model_type(inference_model_path)
         if args.model_type == "auto"
@@ -420,10 +419,9 @@ def generate_vllm_captions(
     items: Iterable[tuple[int, Path]],
     args: argparse.Namespace,
 ) -> Iterable[tuple[int, str]]:
-    from src.train.checkpoint_utils import prepare_inference_model_dir
     from vllm import LLM, SamplingParams
 
-    model_path = prepare_inference_model_dir(args.model_path)
+    model_path = args.model_path
     allowed_media_path = args.allowed_local_media_path
     if allowed_media_path is None:
         roots = iter_video_roots(args)

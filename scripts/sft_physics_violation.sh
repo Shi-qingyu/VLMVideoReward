@@ -42,7 +42,6 @@ args="
     --tune_mm_vision ${tune_mm_vision} \
     --tune_mm_mlp ${tune_mm_mlp} \
     --tune_mm_llm ${tune_mm_llm} \
-    --distill_enable False \
     --using_cot True \
     --bf16 \
     --output_dir ${output_dir} \

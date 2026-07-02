@@ -29,7 +29,6 @@ from inference_common import (  # noqa: E402
     load_processor,
     prepare_processor,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir  # noqa: E402
 
 
 def parse_args():
@@ -172,7 +171,7 @@ def extract_internvl_features(model, processor, args):
 
 def main():
     args = parse_args()
-    model_path = prepare_inference_model_dir(args.model_path)
+    model_path = args.model_path
     model_type = resolve_internvl_model_type(args, model_path)
 
     model = load_model(

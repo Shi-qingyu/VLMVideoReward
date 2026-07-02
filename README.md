@@ -10,10 +10,21 @@ This repository provides a training framework for Qwen VL models. The are two st
 The `src` directory contains the following components:
 
 ### `train/`
-- `trainer_sft.py`: Main SFT trainer updated from Huggingface Trainer
-- `train_qwen_sft.py`: Main entry file for SFT training
-- `train_qwen_grpo.py`: Main entry file for GRPO training
+- `sft_common.py`: Shared SFT runner, optimizer patch, checkpoint resume/save, and LoRA utilities
+- `train_qwen_sft.py`: Qwen3-VL SFT entry and Qwen-specific packed-batch attention patch
+- `train_gemma_sft.py`: Gemma SFT entry
+- `train_internvl_sft.py`: InternVL SFT entry
+- `train_minicpmv_sft.py`: MiniCPM-V SFT entry
+- `train_molmo2_sft.py`: Molmo2 SFT entry
 - `argument.py`: Dataclasses for model, data and training arguments
+
+### `evaluation/`
+- `evaluation_common.py`: Shared evaluation loop, metrics, HF/vLLM generation helpers
+- `evaluation_qwen.py`: Qwen-VL evaluation entry
+- `evaluation_internvl.py`: InternVL evaluation entry
+- `evaluation_gemma4.py`: Gemma evaluation entry
+- `evaluation_minicpmv.py`: MiniCPM-V evaluation entry
+- `evaluation_molmo2.py`: Molmo2 evaluation entry
 
 ### `dataset/`
 - `__init__.py`: Contains datasets configs
@@ -183,28 +194,6 @@ To train the model, make sure to update the `dataset` field in the training scri
 
 ```bash
 bash scripts/sft_2b.sh
-```
-
-### RL
-To train with RL, you first need to define your own reward function in `src/train/reward_func.py`. An example pseudo reward function is shown below:
-
-```python
-def pseudo_reward(
-    model_output: List[str],    # required
-    ground_truth: List[str],    # required
-    model_input: List[str],     # required
-    **kwargs
-) -> List[float]:
-    """
-    A simple placeholder reward function.
-    """
-    return [1.0 for _ in model_output]  # return a float reward for each output
-```
-
-Then, update the `reward_func` and `reward_func_weight` fields in the training script. Use commas to separate multiple functions **without spaces**. Also make sure to update the `dataset` path accordingly.
-
-```bash
-bash scripts/grpo_2b.sh
 ```
 
 The script accepts arguments in three categories:

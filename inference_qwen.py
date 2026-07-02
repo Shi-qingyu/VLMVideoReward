@@ -7,16 +7,15 @@ from inference_common import (
     DEFAULT_PROMPT,
     DEFAULT_VIDEO_FPS,
     DEFAULT_VIDEO_PATH,
+    add_video_time_instruction,
     build_generation_kwargs,
     build_messages,
     infer_model_type,
     load_model,
     load_processor,
-    maybe_add_qwen_time_instruction,
     prepare_processor,
     trim_repeated_response,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 QWEN_MODEL_TYPES = {"qwen3vl", "qwen2.5vl", "qwen2vl"}
@@ -70,8 +69,9 @@ def resolve_qwen_model_type(args, model_path: str) -> str:
 
 def main():
     args = parse_args()
-    inference_model_path = prepare_inference_model_dir(args.model_path)
+    inference_model_path = args.model_path
     model_type = resolve_qwen_model_type(args, inference_model_path)
+    args.model_type = model_type
 
     model = load_model(
         inference_model_path,
@@ -84,7 +84,7 @@ def main():
     prepare_processor(processor, model, model_type, args.model_max_length)
 
     messages = build_messages(args.video, args.prompt, model_type)
-    maybe_add_qwen_time_instruction(messages, processor)
+    add_video_time_instruction(messages, processor, args)
 
     inputs = processor.apply_chat_template(
         messages,

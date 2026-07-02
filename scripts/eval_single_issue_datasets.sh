@@ -7,7 +7,7 @@ cd "${REPO_ROOT}"
 
 MODEL_PATH=${MODEL_PATH:?Set MODEL_PATH=/path/to/checkpoint or MODEL_PATH=hf/model-id}
 
-EVAL_ENTRY=${EVAL_ENTRY:-"${REPO_ROOT}/evaluation_qwen.py"}
+EVAL_ENTRY=${EVAL_ENTRY:-"${REPO_ROOT}/src/evaluation/evaluation_qwen.py"}
 MODEL_TYPE=${MODEL_TYPE:-auto}
 BACKEND=${BACKEND:-vllm}
 OUTPUT_ROOT=${OUTPUT_ROOT:-"${REPO_ROOT}/eval_results/single_issue"}

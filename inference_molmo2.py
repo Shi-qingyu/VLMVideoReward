@@ -6,12 +6,14 @@ from transformers import AutoProcessor
 
 from inference_common import (
     DEFAULT_PROMPT,
+    DEFAULT_VIDEO_FPS,
     DEFAULT_VIDEO_PATH,
     QUESTION_TEMPLATE,
+    add_video_time_instruction,
+    build_video_content_kwargs,
     load_model,
     normalize_molmo2_messages,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir
 
 
 DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4-t-merged-unique/checkpoint-200"
@@ -35,6 +37,12 @@ def parse_args():
     parser.add_argument("--device_map", default=os.environ.get("DEVICE_MAP", "auto"))
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--video_max_frames", type=int, default=8)
+    parser.add_argument("--video_fps", type=float, default=DEFAULT_VIDEO_FPS)
+    parser.add_argument(
+        "--molmo2_video_frame_sampling_mode",
+        default="uniform_last_frame",
+    )
     parser.add_argument(
         "--attn_implementation",
         default=os.environ.get("ATTN_IMPLEMENTATION"),
@@ -49,15 +57,17 @@ def move_inputs_to_device(inputs, device):
     }
 
 
-def build_messages(video_path: str, prompt: str, raw_prompt: bool):
+def build_messages(video_path: str, prompt: str, raw_prompt: bool, args):
     user_text = prompt if raw_prompt else QUESTION_TEMPLATE.format(prompt=prompt)
+    video_content = {"type": "video", "video": video_path}
+    video_content.update(build_video_content_kwargs("molmo2", args))
     return normalize_molmo2_messages(
         [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": user_text},
-                    {"type": "video", "video": video_path},
+                    video_content,
                 ],
             }
         ]
@@ -66,7 +76,8 @@ def build_messages(video_path: str, prompt: str, raw_prompt: bool):
 
 def main():
     args = parse_args()
-    model_path = prepare_inference_model_dir(args.model_path)
+    model_path = args.model_path
+    args.model_type = "molmo2"
 
     processor = AutoProcessor.from_pretrained(
         model_path,
@@ -82,7 +93,8 @@ def main():
         device_map=args.device_map,
     )
 
-    messages = build_messages(args.video, args.prompt, args.raw_prompt)
+    messages = build_messages(args.video, args.prompt, args.raw_prompt, args)
+    add_video_time_instruction(messages, processor, args)
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,

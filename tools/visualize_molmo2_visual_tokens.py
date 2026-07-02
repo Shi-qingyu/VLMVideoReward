@@ -27,7 +27,6 @@ from inference_common import (  # noqa: E402
     load_model,
     normalize_molmo2_messages,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir  # noqa: E402
 
 
 DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4"
@@ -343,7 +342,7 @@ def configure_molmo2_video_processor(processor, args):
 
 def main():
     args = parse_args()
-    model_path = prepare_inference_model_dir(args.model_path)
+    model_path = args.model_path
 
     processor = AutoProcessor.from_pretrained(
         model_path,

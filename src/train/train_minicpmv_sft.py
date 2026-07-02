@@ -1,6 +1,66 @@
-import os
+from __future__ import annotations
 
-from src.train.train_qwen_sft import train
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+import torch
+from transformers import AutoModel, AutoProcessor
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from src.train.argument import ModelArguments, SFTArguments
+from src.train.sft_common import SFTModelSpec, TrainableModulePaths, train_sft
+
+
+def _attn_implementation(attn_implementation: str) -> str:
+    if attn_implementation == "flash_attention_2":
+        return "sdpa"
+    return attn_implementation
+
+
+def load_model(
+    model_args: ModelArguments,
+    training_args: SFTArguments,
+    attn_implementation: str,
+) -> torch.nn.Module:
+    torch_dtype = torch.bfloat16 if training_args.bf16 else None
+    return AutoModel.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        trust_remote_code=True,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True,
+        attn_implementation=_attn_implementation(attn_implementation),
+    )
+
+
+def load_processor(model_args: ModelArguments, training_args: SFTArguments):
+    return AutoProcessor.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        trust_remote_code=True,
+    )
+
+
+MINICPMV_SPEC = SFTModelSpec(
+    model_type="minicpmv",
+    default_attn_implementation="sdpa",
+    load_model=load_model,
+    load_processor=load_processor,
+    trainable_paths=TrainableModulePaths(
+        vision=("vpm",),
+        projector=("resampler",),
+        language=("llm",),
+    ),
+)
+
+
+def train(attn_implementation: Optional[str] = None) -> None:
+    train_sft(MINICPMV_SPEC, attn_implementation=attn_implementation)
 
 
 if __name__ == "__main__":

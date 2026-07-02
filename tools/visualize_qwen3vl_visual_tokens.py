@@ -21,14 +21,13 @@ from inference_common import (  # noqa: E402
     DEFAULT_PROMPT,
     DEFAULT_VIDEO_FPS,
     DEFAULT_VIDEO_PATH,
+    add_video_time_instruction,
     build_messages,
     infer_model_type,
     load_model,
     load_processor,
-    maybe_add_qwen_time_instruction,
     prepare_processor,
 )
-from src.train.checkpoint_utils import prepare_inference_model_dir  # noqa: E402
 
 
 QWEN_MODEL_TYPES = {"qwen3vl", "qwen2.5vl", "qwen2vl"}
@@ -156,7 +155,7 @@ def configure_qwen_video_processor(processor, args):
 
 def extract_qwen_visual_features(model, processor, args, model_type: str):
     messages = build_messages(args.video, args.prompt, model_type)
-    maybe_add_qwen_time_instruction(messages, processor)
+    add_video_time_instruction(messages, processor, args)
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -189,8 +188,9 @@ def extract_qwen_visual_features(model, processor, args, model_type: str):
 
 def main():
     args = parse_args()
-    model_path = prepare_inference_model_dir(args.model_path)
+    model_path = args.model_path
     model_type = resolve_qwen_model_type(args, model_path)
+    args.model_type = model_type
 
     model = load_model(
         model_path,

@@ -32,34 +32,9 @@ entry_file=${ENTRY_FILE:-"${REPO_ROOT}/src/train/train_qwen_sft.py"}
 # Dataset configuration
 datasets=${DATASETS:-"videoreward_t_merged"}
 
-# V-JEPA 2.1 distillation configuration
-distill_enable=${DISTILL_ENABLE:-true}
-distill_teacher_arch=${DISTILL_TEACHER_ARCH:-"vjepa2_1_vit_large_384"}
-distill_teacher_ckpt=${DISTILL_TEACHER_CKPT:-"${REPO_ROOT}/vjepa2_1_vitl_dist_vitG_384.pt"}
-distill_weight=${DISTILL_WEIGHT:-1.0}
-distill_start_steps=${DISTILL_START_STEPS:-0}
-distill_warmup_steps=${DISTILL_WARMUP_STEPS:-0}
-distill_loss_type=${DISTILL_LOSS_TYPE:-"cosine"}
-distill_feature_source=${DISTILL_FEATURE_SOURCE:-"visual"}
-distill_teacher_image_size=${DISTILL_TEACHER_IMAGE_SIZE:-384}
-distill_teacher_num_video_frames=${DISTILL_TEACHER_NUM_VIDEO_FRAMES:-20}
-distill_teacher_match_student_resolution=${DISTILL_TEACHER_MATCH_STUDENT_RESOLUTION:-true}
-distill_use_images=${DISTILL_USE_IMAGES:-true}
-distill_use_videos=${DISTILL_USE_VIDEOS:-true}
-distill_visualize=${DISTILL_VISUALIZE:-true}
-distill_visualize_steps=${DISTILL_VISUALIZE_STEPS:-100}
-distill_visualize_max_items=${DISTILL_VISUALIZE_MAX_ITEMS:-1}
-distill_visualize_max_frames=${DISTILL_VISUALIZE_MAX_FRAMES:-0}
-
 # Output configuration
-run_name=${RUN_NAME:-"qwen3vl-2b-vjepa21-distill-weight${distill_weight}-vision-lr${vision_tower_lr}-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
+run_name=${RUN_NAME:-"qwen3vl-2b-vision-lr${vision_tower_lr}-bs${batch_size}-ga${grad_accum_steps}-t-merged"}
 output_dir=${OUTPUT_DIR:-"${REPO_ROOT}/output/${run_name}"}
-
-if [[ "${distill_enable}" == "true" && ! -f "${distill_teacher_ckpt}" ]]; then
-    echo "V-JEPA teacher checkpoint not found: ${distill_teacher_ckpt}"
-    echo "Set DISTILL_TEACHER_CKPT=/path/to/vjepa2_1_vitl_dist_vitG_384.pt before launching."
-    exit 1
-fi
 
 # Training arguments
 args="
@@ -73,23 +48,6 @@ args="
     --vision_tower_lr ${vision_tower_lr} \
     --mm_projector_lr ${mm_projector_lr} \
     --using_cot True \
-    --distill_enable ${distill_enable} \
-    --distill_teacher_arch ${distill_teacher_arch} \
-    --distill_teacher_ckpt ${distill_teacher_ckpt} \
-    --distill_weight ${distill_weight} \
-    --distill_start_steps ${distill_start_steps} \
-    --distill_warmup_steps ${distill_warmup_steps} \
-    --distill_loss_type ${distill_loss_type} \
-    --distill_feature_source ${distill_feature_source} \
-    --distill_teacher_image_size ${distill_teacher_image_size} \
-    --distill_teacher_num_video_frames ${distill_teacher_num_video_frames} \
-    --distill_teacher_match_student_resolution ${distill_teacher_match_student_resolution} \
-    --distill_use_images ${distill_use_images} \
-    --distill_use_videos ${distill_use_videos} \
-    --distill_visualize ${distill_visualize} \
-    --distill_visualize_steps ${distill_visualize_steps} \
-    --distill_visualize_max_items ${distill_visualize_max_items} \
-    --distill_visualize_max_frames ${distill_visualize_max_frames} \
     --bf16 \
     --output_dir ${output_dir} \
     --num_train_epochs 1 \
