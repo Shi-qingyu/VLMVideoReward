@@ -1,21 +1,16 @@
 import argparse
 import os
 
-import torch
-
 from inference_common import (
-    DEFAULT_PROMPT,
-    DEFAULT_VIDEO_PATH,
-    add_video_time_instruction,
-    build_generation_kwargs,
-    build_messages,
-    build_template_kwargs,
+    add_dataset_sample_args,
     configure_internvl_processor,
+    generate_from_messages,
+    get_one_dataloader_sample,
     infer_model_type,
     load_model,
     load_processor,
+    print_dataloader_sample_result,
     prepare_processor,
-    trim_repeated_response,
 )
 
 
@@ -27,8 +22,7 @@ def parse_args():
         default=default_model_path,
         required=default_model_path is None,
     )
-    parser.add_argument("--video", default=os.environ.get("VIDEO", DEFAULT_VIDEO_PATH))
-    parser.add_argument("--prompt", default=os.environ.get("PROMPT", DEFAULT_PROMPT))
+    add_dataset_sample_args(parser)
     parser.add_argument(
         "--model_type",
         default=os.environ.get("MODEL_TYPE", "auto"),
@@ -47,6 +41,11 @@ def parse_args():
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     parser.add_argument("--video_max_frames", type=int, default=8)
+    parser.add_argument(
+        "--video_fps",
+        type=float,
+        default=float(os.environ.get("VIDEO_FPS", "2")),
+    )
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)
@@ -84,33 +83,12 @@ def main():
     prepare_processor(processor, model, model_type, args.model_max_length)
     configure_internvl_processor(processor, model, args)
 
-    messages = build_messages(args.video, args.prompt, model_type)
-    add_video_time_instruction(messages, processor, args)
-    inputs = processor.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_dict=True,
-        return_tensors="pt",
-        **build_template_kwargs(model_type, args),
-    )
-    inputs = inputs.to(model.device)
-
-    with torch.inference_mode():
-        generated_ids = model.generate(
-            **inputs,
-            **build_generation_kwargs(processor.tokenizer, args, model_type),
-        )
-
-    generated_ids_trimmed = [
-        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-    output_text = processor.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    )
-    print(trim_repeated_response(output_text[0]))
+    if not args.dataset_use:
+        raise SystemExit("--dataset_use is required for dataloader inference.")
+    sample = get_one_dataloader_sample(processor, args)
+    messages = sample["user"]
+    prediction = generate_from_messages(model, processor, messages, model_type, args)
+    print_dataloader_sample_result(sample, prediction, args, model_type)
 
 
 if __name__ == "__main__":

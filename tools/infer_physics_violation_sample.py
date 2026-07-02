@@ -11,7 +11,6 @@ from typing import Any
 import torch
 
 from inference_common import (
-    DEFAULT_VIDEO_FPS,
     add_video_time_instruction,
     build_generation_kwargs,
     build_template_kwargs,
@@ -71,7 +70,11 @@ def parse_args():
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     parser.add_argument("--video_max_frames", type=int, default=8)
-    parser.add_argument("--video_fps", type=float, default=DEFAULT_VIDEO_FPS)
+    parser.add_argument(
+        "--video_fps",
+        type=float,
+        default=float(os.environ.get("VIDEO_FPS", "2")),
+    )
     parser.add_argument("--internvl_image_size", type=int, default=448)
     parser.add_argument("--internvl_min_patches", type=int, default=1)
     parser.add_argument("--internvl_max_patches", type=int, default=4)

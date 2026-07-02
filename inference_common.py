@@ -1,87 +1,81 @@
-import functools
-import inspect
 import os
+import random
 import re
-import textwrap
-import types
 from pathlib import Path
-from typing import Any
 
 import torch
+from torch.utils.data import DataLoader, Subset
 from transformers import (
     AutoConfig,
-    AutoImageProcessor,
     AutoModel,
     AutoModelForImageTextToText,
     AutoProcessor,
-    AutoTokenizer,
-    AutoVideoProcessor,
-    StoppingCriteria,
-    StoppingCriteriaList,
 )
 
-from src.dataset.data_processor import _build_video_time_instruction
-
-
-DEFAULT_VIDEO_PATH = "data/videos/eval_0/1.mp4"
-DEFAULT_VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "2"))
-DEFAULT_PROMPT = (
-    "A young Black man with a beard walks through an aisle of a brightly lit toy store, surrounded by colorful shelves. "
-    "He pauses in front of a shelf displaying puzzle sets, picks up a puzzle set in both hands, examines the pieces closely, "
-    "and smiles at the memories of his own childhood. The camera remains steady, capturing his actions and the vibrant store setting."
-)
-QUESTION_TEMPLATE = (
-    "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\n"
-    "Evaluate the video according to the following dimensions.\n"
-    "Video Quality: whether the video is free from major visual defects, including blur, lack of detail, "
-    "poor texture, lighting issues, color distortion, flickering, and overexposure.\n"
-    "Motion & Interaction: whether the subject's motion is natural, smooth, and realistic; "
-    "whether interactions among subjects and/or objects are physically plausible; "
-    "and whether causal relationships are correctly depicted.\n"
-    "Prompt Alignment: whether the subject and object described in the prompt appear accurately, "
-    "and whether the subject-object interaction described in the prompt is correctly represented.\n"
-    "Prompt: {prompt} Provide your reasoning trace between think tags <think> and </think>, "
-    'then output "Yes" or "No" for each dimension between <answer> and </answer>.'
+from src.dataset.data_processor import (
+    _build_video_time_instruction,
+    make_rl_data_module,
 )
 
 
-class StopSequenceCriteria(StoppingCriteria):
-    def __init__(self, stop_sequences: list[list[int]]):
-        self.stop_sequences = [seq for seq in stop_sequences if seq]
-
-    def __call__(self, input_ids, scores, **kwargs) -> bool:
-        for seq in self.stop_sequences:
-            seq_len = len(seq)
-            if input_ids.shape[-1] < seq_len:
-                continue
-            stop_ids = torch.tensor(seq, device=input_ids.device, dtype=input_ids.dtype)
-            matches = input_ids[:, -seq_len:].eq(stop_ids).all(dim=-1)
-            if matches.all():
-                return True
-        return False
+REMOTE_CODE_MODEL_TYPES = {"internvl", "minicpmv", "molmo2"}
 
 
-def first_int(value):
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple)):
-        return int(value[0])
-    return int(value)
+def str_to_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def env_bool(name: str, default: bool) -> bool:
+    return str_to_bool(os.environ[name]) if name in os.environ else default
+
+
+def add_dataset_sample_args(parser):
+    parser.add_argument(
+        "--dataset_use",
+        "--dataset_name",
+        dest="dataset_use",
+        default=os.environ.get("DATASET_USE") or os.environ.get("DATASET"),
+        help="Dataset name registered in src/dataset/__init__.py.",
+    )
+    parser.add_argument(
+        "--sample_index",
+        "--index",
+        dest="sample_index",
+        type=int,
+        default=int(os.environ.get("SAMPLE_INDEX", "0")),
+    )
+    parser.add_argument(
+        "--random_sample",
+        "--random",
+        dest="random_sample",
+        action="store_true",
+    )
+    parser.add_argument("--seed", type=int, default=int(os.environ.get("SEED", "42")))
+    parser.add_argument(
+        "--using_cot",
+        nargs="?",
+        const=True,
+        default=env_bool("USING_COT", True),
+        type=str_to_bool,
+    )
+    parser.add_argument("--no_using_cot", action="store_false", dest="using_cot")
+    return parser
 
 
 def infer_model_type(model_path: str) -> str:
     name = str(model_path).lower()
     try:
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-        config_model_type = str(getattr(config, "model_type", "")).lower()
-        architectures = " ".join(getattr(config, "architectures", []) or []).lower()
-        haystack = f"{config_model_type} {architectures} {name}"
+        arch = " ".join(getattr(config, "architectures", []) or []).lower()
+        haystack = f"{getattr(config, 'model_type', '')} {arch} {name}".lower()
     except Exception:
         haystack = name
 
     if "internvl" in haystack:
         return "internvl"
-    if "molmo2" in haystack or "molmo" in haystack:
+    if "molmo" in haystack:
         return "molmo2"
     if "gemma" in haystack:
         return "gemma4"
@@ -94,108 +88,13 @@ def infer_model_type(model_path: str) -> str:
     return "qwen3vl"
 
 
-def is_hf_internvl_checkpoint(model_path: str) -> bool:
-    try:
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    except Exception:
-        return False
-    architectures = getattr(config, "architectures", []) or []
-    return (
-        str(getattr(config, "model_type", "")).lower() == "internvl"
-        and any("ForConditionalGeneration" in arch for arch in architectures)
-    )
-
-
-def token_to_id(tokenizer, token: str, required: bool = True) -> int | None:
-    token_id = tokenizer.convert_tokens_to_ids(token)
-    if isinstance(token_id, list):
-        token_id = token_id[0] if token_id else None
-    if token_id is None or token_id == getattr(tokenizer, "unk_token_id", None):
-        ids = tokenizer.encode(token, add_special_tokens=False)
-        token_id = ids[0] if len(ids) == 1 else None
-
-    if token_id is None:
-        if required:
-            raise ValueError(f"Could not resolve tokenizer id for InternVL token: {token}")
-        return None
-    return int(token_id)
-
-
-def patch_internvl_tokenizer(tokenizer):
-    required_token_attrs = {
-        "start_image_token": "<img>",
-        "end_image_token": "</img>",
-        "context_image_token": "<IMG_CONTEXT>",
-    }
-    optional_token_attrs = {
-        "image_token": "<image>",
-        "video_token": "<video>",
-    }
-    for attr, token in {**required_token_attrs, **optional_token_attrs}.items():
-        value = getattr(tokenizer, attr, None) or token
-        setattr(tokenizer, attr, value)
-
-    tokenizer.start_image_token_id = token_to_id(
-        tokenizer,
-        tokenizer.start_image_token,
-    )
-    tokenizer.end_image_token_id = token_to_id(tokenizer, tokenizer.end_image_token)
-    tokenizer.context_image_token_id = token_to_id(
-        tokenizer,
-        tokenizer.context_image_token,
-    )
-    for attr in optional_token_attrs:
-        token_id = token_to_id(tokenizer, getattr(tokenizer, attr), required=False)
-        if token_id is not None:
-            setattr(tokenizer, f"{attr}_id", token_id)
-    return tokenizer
-
-
 def load_processor(model_path: str, model_type: str):
-    processor_kwargs = {
-        "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"}
-    }
-    if model_type != "internvl":
-        processor = AutoProcessor.from_pretrained(model_path, **processor_kwargs)
-        if model_type == "molmo2" and not hasattr(processor, "audio_tokenizer"):
-            processor.audio_tokenizer = None
-        return processor
-
-    try:
-        processor = AutoProcessor.from_pretrained(model_path, **processor_kwargs)
-    except AttributeError as exc:
-        if "start_image_token" not in str(exc):
-            raise
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        tokenizer = patch_internvl_tokenizer(tokenizer)
-        try:
-            processor = AutoProcessor.from_pretrained(
-                model_path,
-                tokenizer=tokenizer,
-                **processor_kwargs,
-            )
-        except AttributeError as second_exc:
-            if "start_image_token" not in str(second_exc):
-                raise
-            from transformers.models.internvl.processing_internvl import InternVLProcessor
-
-            config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-            image_processor = AutoImageProcessor.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-            )
-            video_processor = AutoVideoProcessor.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-            )
-            processor = InternVLProcessor(
-                image_processor=image_processor,
-                tokenizer=tokenizer,
-                video_processor=video_processor,
-                image_seq_length=int(getattr(config, "image_seq_length", 256)),
-            )
-
-    processor.tokenizer = patch_internvl_tokenizer(processor.tokenizer)
+    processor = AutoProcessor.from_pretrained(
+        model_path,
+        trust_remote_code=model_type in REMOTE_CODE_MODEL_TYPES,
+    )
+    if model_type == "molmo2" and not hasattr(processor, "audio_tokenizer"):
+        processor.audio_tokenizer = None
     return processor
 
 
@@ -208,344 +107,101 @@ def load_model(
 ):
     model_kwargs = {
         "dtype": dtype,
-        "trust_remote_code": model_type in {"internvl", "minicpmv", "molmo2"},
+        "trust_remote_code": model_type in REMOTE_CODE_MODEL_TYPES,
     }
     if device_map not in {None, "", "none"}:
         model_kwargs["device_map"] = device_map
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
 
-    if model_type == "internvl" and not is_hf_internvl_checkpoint(model_path):
-        model = AutoModel.from_pretrained(model_path, **model_kwargs)
-    else:
-        model = AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs)
-
-    if model_type == "molmo2":
-        patch_molmo2_vision_pooling_device(model)
-
-    return model.eval()
-
-
-def _first_nested_tensor(value: Any):
-    if torch.is_tensor(value):
-        return value
-    if isinstance(value, dict):
-        for nested_value in value.values():
-            tensor = _first_nested_tensor(nested_value)
-            if tensor is not None:
-                return tensor
-    if isinstance(value, (list, tuple)):
-        for nested_value in value:
-            tensor = _first_nested_tensor(nested_value)
-            if tensor is not None:
-                return tensor
-    return None
-
-
-def _module_tensor_device(module) -> torch.device | None:
-    device = None
-    for tensors_fn in (module.parameters, module.buffers):
-        for tensor in tensors_fn(recurse=True):
-            if tensor.device.type != "meta":
-                device = tensor.device
-    if device is not None:
-        return device
-
-    device = getattr(module, "device", None)
-    if device is None:
-        return None
-    return torch.device(device)
-
-
-def _move_nested_tensors_to_device(value: Any, device: torch.device):
-    if torch.is_tensor(value):
-        if value.device == device:
-            return value
-        return value.to(device, non_blocking=True)
-    if isinstance(value, dict):
-        return {
-            key: _move_nested_tensors_to_device(nested_value, device)
-            for key, nested_value in value.items()
-        }
-    if isinstance(value, tuple):
-        return tuple(_move_nested_tensors_to_device(v, device) for v in value)
-    if isinstance(value, list):
-        return [_move_nested_tensors_to_device(v, device) for v in value]
-    return value
-
-
-def patch_molmo2_vision_pooling_device(model) -> None:
-    core_model = getattr(model, "model", None)
-    vision_backbone = getattr(core_model, "vision_backbone", None)
-    if vision_backbone is None or getattr(
-        vision_backbone,
-        "_vlm_reward_pooling_device_patched",
-        False,
+    model_cls = AutoModelForImageTextToText
+    if (
+        model_type == "internvl"
+        and not str(model_path).rstrip("/").lower().endswith("-hf")
     ):
-        return
+        model_cls = AutoModel
 
-    forward_attr = (
-        "_old_forward" if hasattr(vision_backbone, "_old_forward") else "forward"
-    )
-    if _patch_molmo2_vision_forward_source(vision_backbone, forward_attr):
-        vision_backbone._vlm_reward_pooling_device_patched = True
-        return
-
-    original_forward = getattr(vision_backbone, forward_attr)
-
-    @functools.wraps(original_forward)
-    def patched_forward(*args, **kwargs):
-        target_device = _module_tensor_device(vision_backbone)
-        if target_device is None:
-            tensor = _first_nested_tensor(args)
-            if tensor is None:
-                tensor = _first_nested_tensor(kwargs)
-            target_device = tensor.device if tensor is not None else None
-
-        if target_device is None or target_device.type == "meta":
-            return original_forward(*args, **kwargs)
-
-        moved_args = tuple(
-            _move_nested_tensors_to_device(arg, target_device) for arg in args
-        )
-        moved_kwargs = {
-            key: _move_nested_tensors_to_device(value, target_device)
-            for key, value in kwargs.items()
-        }
-        return original_forward(*moved_args, **moved_kwargs)
-
-    setattr(vision_backbone, forward_attr, patched_forward)
-    vision_backbone._vlm_reward_pooling_device_patched = True
-
-
-def _patch_molmo2_vision_forward_source(vision_backbone, forward_attr: str) -> bool:
-    original_forward = getattr(vision_backbone, forward_attr)
-    forward_func = getattr(original_forward, "__func__", original_forward)
-
-    try:
-        source = textwrap.dedent(inspect.getsource(forward_func))
-    except (OSError, TypeError):
-        return False
-
-    lines = source.splitlines()
-    def_line = next(
-        (idx for idx, line in enumerate(lines) if line.lstrip().startswith("def ")),
-        None,
-    )
-    if def_line is None:
-        return False
-    source = "\n".join(lines[def_line:])
-
-    valid_pattern = re.compile(
-        r"^(?P<indent>\s*)valid = pooled_patches_idx >= 0$",
-        re.MULTILINE,
-    )
-    patched_source, valid_replacements = valid_pattern.subn(
-        lambda match: "\n".join(
-            [
-                (
-                    f"{match.group('indent')}pooled_patches_idx = "
-                    "pooled_patches_idx.to(image_features.device)"
-                ),
-                f"{match.group('indent')}valid = pooled_patches_idx >= 0",
-            ]
-        ),
-        source,
-        count=1,
-    )
-    if valid_replacements != 1:
-        return False
-
-    pooling_pattern = re.compile(
-        r"^(?P<indent>\s*)"
-        r"to_pool = image_features\.reshape\(batch_size, -1, dim\)"
-        r"\[batch_idx, torch\.clip\(pooled_patches_idx, 0\)\]$",
-        re.MULTILINE,
-    )
-
-    def pooling_replacement(match):
-        indent = match.group("indent")
-        return "\n".join(
-            [
-                f"{indent}batch_idx = batch_idx.to(image_features.device)",
-                (
-                    f"{indent}to_pool = image_features.reshape(batch_size, -1, dim)"
-                    "[batch_idx, torch.clip(pooled_patches_idx, 0)]"
-                ),
-            ]
-        )
-
-    patched_source, pooling_replacements = pooling_pattern.subn(
-        pooling_replacement,
-        patched_source,
-        count=1,
-    )
-    if pooling_replacements != 1:
-        return False
-
-    return_pattern = re.compile(
-        r"^(?P<indent>\s*)"
-        r"return pooled_features\.view\(-1, pooled_features\.shape\[-1\]\)"
-        r"\[valid_token\.flatten\(\)\]$",
-        re.MULTILINE,
-    )
-    patched_source, return_replacements = return_pattern.subn(
-        (
-            r"\g<indent>return pooled_features.view(-1, pooled_features.shape[-1])"
-            r"[valid_token.flatten().to(pooled_features.device)]"
-        ),
-        patched_source,
-        count=1,
-    )
-    if return_replacements != 1:
-        return False
-
-    namespace = dict(forward_func.__globals__)
-    try:
-        exec(patched_source, namespace)
-    except Exception:
-        return False
-    patched_forward = namespace.get(forward_func.__name__)
-    if patched_forward is None:
-        return False
-
-    setattr(
-        vision_backbone,
-        forward_attr,
-        types.MethodType(patched_forward, vision_backbone),
-    )
-    return True
+    return model_cls.from_pretrained(model_path, **model_kwargs).eval()
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
     tokenizer = processor.tokenizer
-    if model_type == "internvl":
-        tokenizer = patch_internvl_tokenizer(tokenizer)
-        processor.tokenizer = tokenizer
-
     if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.model_max_length = model_max_length
 
-    if model_type == "internvl" and hasattr(model, "img_context_token_id"):
-        model.img_context_token_id = tokenizer.convert_tokens_to_ids(
-            tokenizer.context_image_token
+    if model_type == "internvl":
+        tokenizer.start_image_token = getattr(tokenizer, "start_image_token", "<img>")
+        tokenizer.end_image_token = getattr(tokenizer, "end_image_token", "</img>")
+        tokenizer.context_image_token = getattr(
+            tokenizer,
+            "context_image_token",
+            "<IMG_CONTEXT>",
         )
+        if hasattr(model, "img_context_token_id"):
+            model.img_context_token_id = tokenizer.convert_tokens_to_ids(
+                tokenizer.context_image_token,
+            )
 
 
 def configure_internvl_processor(processor, model, args):
+    image_size = int(args.internvl_image_size)
     vision_config = getattr(model.config, "vision_config", None)
-    model_image_size = first_int(getattr(vision_config, "image_size", None))
-    image_size = int(args.internvl_image_size or model_image_size or 448)
-    patch_size = int(first_int(getattr(vision_config, "patch_size", None)) or 14)
+    patch_size = getattr(vision_config, "patch_size", 14)
+    patch_size = patch_size[0] if isinstance(patch_size, (list, tuple)) else patch_size
     downsample_ratio = float(getattr(model.config, "downsample_ratio", 0.5))
 
-    if image_size % patch_size != 0:
-        raise ValueError(
-            f"InternVL image size {image_size} must be divisible by patch size {patch_size}."
-        )
-
-    grid_size = image_size // patch_size
-    pooled_grid_size = grid_size * downsample_ratio
-    rounded_grid_size = int(round(pooled_grid_size))
-    if abs(pooled_grid_size - rounded_grid_size) > 1e-6:
-        raise ValueError(
-            f"InternVL image size {image_size} gives patch grid {grid_size}, "
-            f"which is incompatible with downsample_ratio {downsample_ratio}."
-        )
-
     if hasattr(processor, "image_seq_length"):
-        processor.image_seq_length = rounded_grid_size * rounded_grid_size
+        pooled_grid = int(round((image_size // int(patch_size)) * downsample_ratio))
+        processor.image_seq_length = pooled_grid * pooled_grid
 
-    for component in (
-        getattr(processor, "image_processor", None),
-        getattr(processor, "video_processor", None),
-    ):
-        if component is not None and hasattr(component, "size"):
+    for component in (processor.image_processor, processor.video_processor):
+        if hasattr(component, "size"):
             component.size = {"height": image_size, "width": image_size}
 
-    image_processor = getattr(processor, "image_processor", None)
-    if image_processor is not None:
-        if hasattr(image_processor, "min_patches"):
-            image_processor.min_patches = int(args.internvl_min_patches)
-        if hasattr(image_processor, "max_patches"):
-            image_processor.max_patches = int(args.internvl_max_patches)
+    image_processor = processor.image_processor
+    if hasattr(image_processor, "min_patches"):
+        image_processor.min_patches = int(args.internvl_min_patches)
+    if hasattr(image_processor, "max_patches"):
+        image_processor.max_patches = int(args.internvl_max_patches)
 
-    video_processor = getattr(processor, "video_processor", None)
-    if video_processor is not None:
-        if hasattr(video_processor, "num_frames"):
-            video_processor.num_frames = int(args.video_max_frames)
-        if hasattr(video_processor, "do_sample_frames"):
-            video_processor.do_sample_frames = True
-        if hasattr(video_processor, "fps"):
-            video_processor.fps = None
+    video_processor = processor.video_processor
+    if hasattr(video_processor, "num_frames"):
+        video_processor.num_frames = int(args.video_max_frames)
+    if hasattr(video_processor, "do_sample_frames"):
+        video_processor.do_sample_frames = True
+    if hasattr(video_processor, "fps"):
+        video_processor.fps = None
 
 
 def build_video_content_kwargs(model_type: str, args) -> dict:
     if model_type != "molmo2":
         return {}
 
-    kwargs = {}
-    video_max_frames = getattr(args, "video_max_frames", None)
-    if video_max_frames is not None:
-        kwargs["num_frames"] = int(video_max_frames)
-
-    video_fps = getattr(args, "video_fps", None)
-    if video_fps is not None and video_fps > 0:
-        kwargs["max_fps"] = float(video_fps)
-
-    frame_sampling_mode = getattr(args, "molmo2_video_frame_sampling_mode", None)
-    if frame_sampling_mode:
-        kwargs["frame_sampling_mode"] = frame_sampling_mode
-
+    kwargs = {
+        "num_frames": int(args.video_max_frames),
+        "frame_sampling_mode": args.molmo2_video_frame_sampling_mode,
+    }
+    if args.video_fps > 0:
+        kwargs["max_fps"] = float(args.video_fps)
     return kwargs
-
-
-def build_messages(
-    video_path: str,
-    prompt: str,
-    model_type: str = "",
-    video_content_kwargs: dict | None = None,
-):
-    user_input = QUESTION_TEMPLATE.format(prompt=prompt)
-    video_content = {"type": "video", "video": str(Path(video_path).resolve())}
-    video_content.update(video_content_kwargs or {})
-    return [
-        {
-            "role": "user",
-            "content": [
-                video_content,
-                {"type": "text", "text": user_input},
-            ],
-        }
-    ]
 
 
 def normalize_molmo2_messages(messages):
     normalized = []
     for message in messages:
-        if message.get("role") != "user" or not isinstance(message.get("content"), list):
-            normalized.append(message)
-            continue
-        text_parts = [part for part in message["content"] if part.get("type") == "text"]
-        other_parts = [part for part in message["content"] if part.get("type") != "text"]
-        normalized.append({**message, "content": text_parts + other_parts})
+        content = message.get("content", [])
+        if message.get("role") == "user" and isinstance(content, list):
+            text_parts = [part for part in content if part.get("type") == "text"]
+            media_parts = [part for part in content if part.get("type") != "text"]
+            message = {**message, "content": text_parts + media_parts}
+        normalized.append(message)
     return normalized
 
 
 def add_video_time_instruction(messages, processor, args=None):
-    if not messages:
-        return
-
-    content = messages[0].get("content", [])
-    if not isinstance(content, list):
-        return
-
-    video_paths = [
-        part.get("video")
-        for part in content
-        if isinstance(part, dict) and part.get("type") == "video" and part.get("video")
-    ]
+    content = messages[0]["content"]
+    video_paths = [part["video"] for part in content if part.get("type") == "video"]
     if not video_paths:
         return
 
@@ -558,16 +214,13 @@ def add_video_time_instruction(messages, processor, args=None):
     if not time_instruction:
         return
 
-    for part in content:
-        if isinstance(part, dict) and part.get("type") == "text":
-            part["text"] = f"{time_instruction}\n{part['text']}"
-            return
+    text_part = next(part for part in content if part.get("type") == "text")
+    text_part["text"] = f"{time_instruction}\n{text_part['text']}"
 
 
 def build_template_kwargs(model_type: str, args):
     if model_type != "internvl":
         return {}
-
     return {
         "num_frames": int(args.video_max_frames),
         "do_sample_frames": True,
@@ -578,35 +231,21 @@ def build_template_kwargs(model_type: str, args):
     }
 
 
-def token_ids_for_text(tokenizer, text: str) -> list[int]:
-    token_ids = tokenizer.encode(text, add_special_tokens=False)
-    return token_ids if token_ids else []
-
-
 def collect_eos_token_ids(tokenizer) -> list[int]:
-    eos_ids: list[int] = []
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    if isinstance(eos_token_id, int):
+    eos_ids = []
+    eos_token_id = tokenizer.eos_token_id
+    if isinstance(eos_token_id, (list, tuple)):
+        eos_ids.extend(eos_token_id)
+    elif eos_token_id is not None:
         eos_ids.append(eos_token_id)
-    elif isinstance(eos_token_id, (list, tuple)):
-        eos_ids.extend(token_id for token_id in eos_token_id if isinstance(token_id, int))
 
-    for token in ("<|im_end|>", "</s>", getattr(tokenizer, "eos_token", None)):
+    for token in ("<|im_end|>", "</s>", tokenizer.eos_token):
         if token is None:
             continue
         token_id = tokenizer.convert_tokens_to_ids(token)
-        if isinstance(token_id, int) and token_id != getattr(tokenizer, "unk_token_id", None):
+        if isinstance(token_id, int) and token_id != tokenizer.unk_token_id:
             eos_ids.append(token_id)
-
     return sorted(set(eos_ids))
-
-
-def build_stopping_criteria(tokenizer) -> StoppingCriteriaList:
-    stop_sequences = [
-        token_ids_for_text(tokenizer, "</answer>"),
-        token_ids_for_text(tokenizer, "<|im_end|>"),
-    ]
-    return StoppingCriteriaList([StopSequenceCriteria(stop_sequences)])
 
 
 def build_generation_kwargs(tokenizer, args, model_type: str = ""):
@@ -614,36 +253,135 @@ def build_generation_kwargs(tokenizer, args, model_type: str = ""):
         "max_new_tokens": args.max_new_tokens,
         "do_sample": args.temperature > 0,
         "pad_token_id": tokenizer.pad_token_id,
-        "stopping_criteria": build_stopping_criteria(tokenizer),
     }
-    if model_type != "molmo2":
-        generation_kwargs["repetition_penalty"] = args.repetition_penalty
-        if args.no_repeat_ngram_size > 0:
-            generation_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram_size
 
     eos_token_ids = collect_eos_token_ids(tokenizer)
     if eos_token_ids:
         generation_kwargs["eos_token_id"] = eos_token_ids
-
     if args.temperature > 0:
         generation_kwargs["temperature"] = args.temperature
         generation_kwargs["top_p"] = args.top_p
-
+    if model_type != "molmo2":
+        generation_kwargs["repetition_penalty"] = args.repetition_penalty
+        if args.no_repeat_ngram_size > 0:
+            generation_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram_size
     return generation_kwargs
 
 
+def get_one_dataloader_sample(processor, args):
+    data_module = make_rl_data_module(processor=processor, data_args=args)
+    dataset = data_module["train_dataset"]
+    if args.random_sample:
+        sample_index = random.Random(args.seed).randrange(len(dataset))
+    else:
+        sample_index = int(args.sample_index)
+
+    dataloader = DataLoader(
+        Subset(dataset, [sample_index]),
+        collate_fn=data_module["data_collator"],
+        batch_size=1,
+    )
+    batch = next(iter(dataloader))
+    return {
+        "sample_index": sample_index,
+        "dataset_size": len(dataset),
+        "user": batch["user"][0],
+        "gt": batch["gt"][0],
+    }
+
+
+def move_inputs_to_device(inputs, device):
+    if hasattr(inputs, "to"):
+        return inputs.to(device)
+    return {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in inputs.items()
+    }
+
+
+def generate_from_messages(model, processor, messages, model_type: str, args) -> str:
+    if model_type == "molmo2":
+        messages = normalize_molmo2_messages(messages)
+
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt",
+        **build_template_kwargs(model_type, args),
+    )
+    inputs = move_inputs_to_device(inputs, model.device)
+
+    with torch.inference_mode():
+        generated_ids = model.generate(
+            **inputs,
+            **build_generation_kwargs(processor.tokenizer, args, model_type),
+        )
+
+    generated_ids_trimmed = [
+        out_ids[len(in_ids) :]
+        for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+    ]
+    output_text = processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
+    return trim_repeated_response(output_text[0])
+
+
+def extract_first_media(messages, media_type: str):
+    for message in messages:
+        for part in message["content"]:
+            if part.get("type") == media_type:
+                return part[media_type]
+    return None
+
+
+def extract_text_from_messages(messages) -> str:
+    return "\n".join(
+        part["text"]
+        for message in messages
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+
+
+def extract_answer(text: str) -> str:
+    match = re.search(r"<answer>\s*(.*?)\s*</answer>", text, re.S | re.I)
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
+
+
+def print_dataloader_sample_result(sample, prediction: str, args, model_type: str):
+    ground_truth = extract_text_from_messages(sample["gt"])
+
+    print(f"model_path: {args.model_path}")
+    print(f"dataset_name: {args.dataset_use}")
+    print(f"sample_index: {sample['sample_index']} / {sample['dataset_size']}")
+    print(f"model_type: {model_type}")
+    for media_type in ("video", "image"):
+        media_path = extract_first_media(sample["user"], media_type)
+        if media_path:
+            print(f"{media_type}: {media_path}")
+
+    print("\n[Prompt]")
+    print(extract_text_from_messages(sample["user"]))
+    print("\n[Prediction]")
+    print(prediction)
+    print("\n[Ground Truth]")
+    print(ground_truth)
+
+    pred_answer = extract_answer(prediction)
+    gt_answer = extract_answer(ground_truth)
+    if pred_answer or gt_answer:
+        print(f"\n[pred_answer] {pred_answer}")
+        print(f"[gt_answer] {gt_answer}")
+
+
 def trim_repeated_response(text: str) -> str:
-    answer_end = text.find("</answer>")
-    if answer_end >= 0:
-        return text[: answer_end + len("</answer>")].strip()
-
-    first_think_end = text.find("</think>")
-    second_think_start = text.find("<think>", first_think_end + len("</think>"))
-    if first_think_end >= 0 and second_think_start >= 0:
-        return text[:second_think_start].strip()
-
-    dangling_think = text.find("\n</think>", first_think_end + len("</think>"))
-    if first_think_end >= 0 and dangling_think >= 0:
-        return text[:dangling_think].strip()
-
+    for marker in ("</answer>", "<|im_end|>", "</s>"):
+        index = text.find(marker)
+        if index >= 0:
+            return text[: index + len(marker)].strip()
     return text.strip()

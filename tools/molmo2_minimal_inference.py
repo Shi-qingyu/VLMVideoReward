@@ -11,11 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from inference_common import DEFAULT_PROMPT, load_model  # noqa: E402
+from inference_common import load_model  # noqa: E402
 
 
 DEFAULT_MODEL_PATH = "output/molmo2-4b-baseline-bs4-ga4"
 DEFAULT_VIDEO_PATH = "data/videos/eval_0/0.mp4"
+DEFAULT_PROMPT = (
+    "A young Black man with a beard walks through an aisle of a brightly lit toy store, surrounded by colorful shelves. "
+    "He pauses in front of a shelf displaying puzzle sets, picks up a puzzle set in both hands, examines the pieces closely, "
+    "and smiles at the memories of his own childhood. The camera remains steady, capturing his actions and the vibrant store setting."
+)
 
 
 def parse_args():

@@ -18,11 +18,7 @@ from visual_token_viz_common import (
 add_repo_root_to_path()
 
 from inference_common import (  # noqa: E402
-    DEFAULT_PROMPT,
-    DEFAULT_VIDEO_FPS,
-    DEFAULT_VIDEO_PATH,
     add_video_time_instruction,
-    build_messages,
     infer_model_type,
     load_model,
     load_processor,
@@ -30,7 +26,40 @@ from inference_common import (  # noqa: E402
 )
 
 
+DEFAULT_VIDEO_PATH = "data/videos/eval_0/1.mp4"
+DEFAULT_VIDEO_FPS = float(os.environ.get("VIDEO_FPS", "2"))
+DEFAULT_PROMPT = (
+    "A young Black man with a beard walks through an aisle of a brightly lit toy store, surrounded by colorful shelves. "
+    "He pauses in front of a shelf displaying puzzle sets, picks up a puzzle set in both hands, examines the pieces closely, "
+    "and smiles at the memories of his own childhood. The camera remains steady, capturing his actions and the vibrant store setting."
+)
+QUESTION_TEMPLATE = (
+    "Suppose you are an expert in judging and evaluating the quality of AI-generated videos.\n"
+    "Evaluate the video according to the following dimensions.\n"
+    "Video Quality: whether the video is free from major visual defects, including blur, lack of detail, "
+    "poor texture, lighting issues, color distortion, flickering, and overexposure.\n"
+    "Motion & Interaction: whether the subject's motion is natural, smooth, and realistic; "
+    "whether interactions among subjects and/or objects are physically plausible; "
+    "and whether causal relationships are correctly depicted.\n"
+    "Prompt Alignment: whether the subject and object described in the prompt appear accurately, "
+    "and whether the subject-object interaction described in the prompt is correctly represented.\n"
+    "Prompt: {prompt} Provide your reasoning trace between think tags <think> and </think>, "
+    'then output "Yes" or "No" for each dimension between <answer> and </answer>.'
+)
 QWEN_MODEL_TYPES = {"qwen3vl", "qwen2.5vl", "qwen2vl"}
+
+
+def build_messages(video_path: str, prompt: str, model_type: str = ""):
+    del model_type
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "video", "video": str(Path(video_path).resolve())},
+                {"type": "text", "text": QUESTION_TEMPLATE.format(prompt=prompt)},
+            ],
+        }
+    ]
 
 
 def parse_args():
