@@ -69,7 +69,7 @@ args="
     --gradient_checkpointing True \
     --dataloader_num_workers 8 \
     --run_name ${run_name} \
-    --report_to wandb
+    --report_to none
 "
 
 # Launch training
