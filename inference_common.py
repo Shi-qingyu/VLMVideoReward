@@ -1,6 +1,9 @@
+import inspect
 import os
 import random
 import re
+import textwrap
+import types
 from pathlib import Path
 
 import torch
@@ -121,7 +124,63 @@ def load_model(
     ):
         model_cls = AutoModel
 
-    return model_cls.from_pretrained(model_path, **model_kwargs).eval()
+    model = model_cls.from_pretrained(model_path, **model_kwargs).eval()
+    if model_type == "molmo2":
+        patch_molmo2_vision_pooling_device(model)
+    return model
+
+
+def patch_molmo2_vision_pooling_device(model):
+    vision_backbone = getattr(getattr(model, "model", None), "vision_backbone", None)
+    if vision_backbone is None:
+        return
+
+    forward_attr = "_old_forward" if hasattr(vision_backbone, "_old_forward") else "forward"
+    original_forward = getattr(vision_backbone, forward_attr)
+    forward_func = getattr(original_forward, "__func__", original_forward)
+
+    try:
+        source = textwrap.dedent(inspect.getsource(forward_func))
+    except (OSError, TypeError):
+        return
+
+    source = source[source.find("def ") :]
+    replacements = {
+        "valid = pooled_patches_idx >= 0": (
+            "pooled_patches_idx = pooled_patches_idx.to(image_features.device)\n"
+            "        valid = pooled_patches_idx >= 0"
+        ),
+        (
+            "to_pool = image_features.reshape(batch_size, -1, dim)"
+            "[batch_idx, torch.clip(pooled_patches_idx, 0)]"
+        ): (
+            "batch_idx = batch_idx.to(image_features.device)\n"
+            "        to_pool = image_features.reshape(batch_size, -1, dim)"
+            "[batch_idx, torch.clip(pooled_patches_idx, 0)]"
+        ),
+        (
+            "return pooled_features.view(-1, pooled_features.shape[-1])"
+            "[valid_token.flatten()]"
+        ): (
+            "return pooled_features.view(-1, pooled_features.shape[-1])"
+            "[valid_token.flatten().to(pooled_features.device)]"
+        ),
+    }
+    for old, new in replacements.items():
+        source = source.replace(old, new, 1)
+
+    namespace = dict(forward_func.__globals__)
+    try:
+        exec(source, namespace)
+    except Exception:
+        return
+    patched_forward = namespace.get(forward_func.__name__)
+    if patched_forward is not None:
+        setattr(
+            vision_backbone,
+            forward_attr,
+            types.MethodType(patched_forward, vision_backbone),
+        )
 
 
 def prepare_processor(processor, model, model_type: str, model_max_length: int):
