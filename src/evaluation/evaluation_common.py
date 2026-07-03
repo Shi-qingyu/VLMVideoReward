@@ -17,7 +17,7 @@ from transformers import AutoProcessor
 
 from inference_common import (
     build_generation_kwargs,
-    build_template_kwargs,
+    build_template_kwargs_for_messages,
     configure_internvl_processor,
     infer_model_type,
     load_model,
@@ -492,9 +492,15 @@ def generate_hf_one(model, processor, model_type: str, args, messages):
         add_generation_prompt=True,
         return_dict=True,
         return_tensors="pt",
-        **build_template_kwargs(model_type, args),
+        **build_template_kwargs_for_messages(model_type, args, messages),
     )
     inputs = inputs.to(model.device)
+
+    if not hasattr(model, "generate"):
+        raise AttributeError(
+            f"{type(model).__name__} has no generate method. "
+            "InternVL HF checkpoints should be loaded with AutoModelForImageTextToText."
+        )
 
     generated_ids = model.generate(
         **inputs,

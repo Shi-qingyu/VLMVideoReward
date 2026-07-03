@@ -14,6 +14,7 @@ from transformers import (
 
 from src.dataset.data_processor import (
     _build_video_time_instruction,
+    _read_video_metadata,
     make_rl_data_module,
 )
 
@@ -114,14 +115,15 @@ def load_model(
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
 
-    model_cls = AutoModelForImageTextToText
-    if (
-        model_type == "internvl"
-        and not str(model_path).rstrip("/").lower().endswith("-hf")
-    ):
-        model_cls = AutoModel
-
-    model = model_cls.from_pretrained(model_path, **model_kwargs).eval()
+    try:
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_path,
+            **model_kwargs,
+        ).eval()
+    except (AttributeError, KeyError, ValueError):
+        if model_type != "internvl":
+            raise
+        model = AutoModel.from_pretrained(model_path, **model_kwargs).eval()
     if model_type == "molmo2":
         patch_molmo2_vision_pooling_device(model)
     return model
@@ -279,6 +281,39 @@ def build_template_kwargs(model_type: str, args):
     }
 
 
+def build_template_kwargs_for_messages(model_type: str, args, messages):
+    template_kwargs = build_template_kwargs(model_type, args)
+    if model_type == "internvl":
+        template_kwargs = cap_template_video_num_frames(template_kwargs, messages)
+    return template_kwargs
+
+
+def cap_template_video_num_frames(template_kwargs: dict, messages) -> dict:
+    try:
+        requested_frames = int(template_kwargs.get("num_frames", 0))
+    except (TypeError, ValueError):
+        requested_frames = 0
+    if requested_frames <= 0:
+        return template_kwargs
+
+    source_frame_counts = []
+    for video_path in extract_media_paths(messages, "video"):
+        _, source_frames, _ = _read_video_metadata(video_path)
+        if source_frames:
+            source_frame_counts.append(source_frames)
+
+    if not source_frame_counts:
+        return template_kwargs
+
+    capped_frames = min(requested_frames, min(source_frame_counts))
+    if capped_frames == requested_frames:
+        return template_kwargs
+
+    template_kwargs = dict(template_kwargs)
+    template_kwargs["num_frames"] = capped_frames
+    return template_kwargs
+
+
 def collect_eos_token_ids(tokenizer) -> list[int]:
     eos_ids = []
     eos_token_id = tokenizer.eos_token_id
@@ -357,9 +392,15 @@ def generate_from_messages(model, processor, messages, model_type: str, args) ->
         add_generation_prompt=True,
         return_dict=True,
         return_tensors="pt",
-        **build_template_kwargs(model_type, args),
+        **build_template_kwargs_for_messages(model_type, args, messages),
     )
     inputs = move_inputs_to_device(inputs, model.device)
+
+    if not hasattr(model, "generate"):
+        raise AttributeError(
+            f"{type(model).__name__} has no generate method. "
+            "InternVL HF checkpoints should be loaded with AutoModelForImageTextToText."
+        )
 
     with torch.inference_mode():
         generated_ids = model.generate(
@@ -385,6 +426,15 @@ def extract_first_media(messages, media_type: str):
             if part.get("type") == media_type:
                 return part[media_type]
     return None
+
+
+def extract_media_paths(messages, media_type: str):
+    paths = []
+    for message in messages:
+        for part in message["content"]:
+            if part.get("type") == media_type:
+                paths.append(part[media_type])
+    return paths
 
 
 def extract_text_from_messages(messages) -> str:
