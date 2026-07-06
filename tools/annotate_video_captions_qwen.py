@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-DEFAULT_CAPTION_PROMPT = "Describe this video in one concise English sentence."
+DEFAULT_INPUT_PATH = "data/physics_violation_sampled_train.json"
+DEFAULT_OUTPUT_PATH = "data/physics_violation_sampled_train_qwen3vl4b_captioned.json"
+DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-4B-Instruct"
+DEFAULT_CAPTION_PROMPT = (
+    "Describe the visible scene and main motion in this video in one concise "
+    "English sentence."
+)
 
 CAPTION_RE = re.compile(r"^\s*Video Caption\s*:", re.IGNORECASE)
 
@@ -28,17 +34,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="data/train_t_merged_unique.json",
+        default=DEFAULT_INPUT_PATH,
         help="Input VideoReward JSON file.",
     )
     parser.add_argument(
         "--output",
-        default="data/train_t_merged_unique_qwen3vl8b_captioned.json",
+        default=DEFAULT_OUTPUT_PATH,
         help="Output JSON file to write.",
     )
     parser.add_argument(
         "--model-path",
-        default="Qwen/Qwen3-VL-8B-Instruct",
+        default=DEFAULT_MODEL_PATH,
         help="HF model id or local Qwen-VL checkpoint path.",
     )
     parser.add_argument(
@@ -77,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-gpus",
         type=int,
-        default=int(os.environ.get("NUM_GPUS", "8")),
+        default=int(os.environ.get("NUM_GPUS", "1")),
         help=(
             "Launch this many single-GPU shard workers. Use --num-gpus 1 to run "
             "inside the current process."
@@ -245,6 +251,13 @@ def insert_caption(value: str, caption: str, prefix: str) -> str:
     elif rest.startswith("\n"):
         insert_at += 1
 
+    line_end = value.find("\n", insert_at)
+    if line_end < 0:
+        line_end = len(value)
+    first_line = value[insert_at:line_end].rstrip("\r")
+    if CAPTION_RE.match(first_line):
+        return value[:insert_at] + caption_line + value[line_end:]
+
     return value[:insert_at] + caption_line + "\n" + value[insert_at:]
 
 
@@ -339,6 +352,24 @@ def build_vllm_message(video_path: Path, prompt: str) -> list[dict[str, Any]]:
     ]
 
 
+def infer_allowed_local_media_path(
+    items: list[tuple[int, Path]],
+    args: argparse.Namespace,
+) -> str:
+    if args.allowed_local_media_path:
+        return str(Path(args.allowed_local_media_path).expanduser())
+
+    if items:
+        media_paths = [str(video_path) for _, video_path in items]
+        common_path = Path(os.path.commonpath(media_paths))
+        if common_path.is_file():
+            common_path = common_path.parent
+        return str(common_path)
+
+    roots = iter_video_roots(args)
+    return os.path.commonpath([str(root) for root in roots])
+
+
 def load_hf_model(args: argparse.Namespace):
     from inference_common import (
         infer_model_type,
@@ -422,10 +453,8 @@ def generate_vllm_captions(
     from vllm import LLM, SamplingParams
 
     model_path = args.model_path
-    allowed_media_path = args.allowed_local_media_path
-    if allowed_media_path is None:
-        roots = iter_video_roots(args)
-        allowed_media_path = os.path.commonpath([str(root) for root in roots])
+    pending_items = list(items)
+    allowed_media_path = infer_allowed_local_media_path(pending_items, args)
 
     llm = LLM(
         model=model_path,
@@ -443,7 +472,10 @@ def generate_vllm_captions(
         stop=["<|im_end|>", "</answer>", "</think>"],
     )
 
-    for batch in batched(progress(items, desc="Captioning(vLLM)"), args.batch_size):
+    for batch in batched(
+        progress(pending_items, desc="Captioning(vLLM)", total=len(pending_items)),
+        args.batch_size,
+    ):
         prompts = [
             build_vllm_message(video_path, args.caption_prompt)
             for _, video_path in batch
